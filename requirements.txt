@@ -1,0 +1,8 @@
+# Core (all have aarch64 wheels for Raspberry Pi)
+feedparser
+httpx
+beautifulsoup4
+
+# Optional: nicer article extraction (pulls lxml). Falls back to BeautifulSoup
+# if absent, so it's safe to omit on very small boxes.
+trafilatura

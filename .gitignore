@@ -1,0 +1,11 @@
+# Secrets — never commit (LLM API key, SMTP password)
+.env
+
+# Local virtualenv (rebuild per machine, e.g. on the Pi)
+venv/
+
+# Runtime output
+brief.log
+last_briefing.html
+__pycache__/
+*.pyc
