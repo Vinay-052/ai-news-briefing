@@ -1,5 +1,6 @@
 # Secrets — never commit (LLM API key, SMTP password)
 .env
+.env.bak
 
 # Local virtualenv (rebuild per machine, e.g. on the Pi)
 venv/
