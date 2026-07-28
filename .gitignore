@@ -2,11 +2,16 @@
 .env
 .env.bak
 
+# Personal documents (your CV) and generated report archive
+*.pdf
+
 # Local virtualenv (rebuild per machine, e.g. on the Pi)
 venv/
 
-# Runtime output
+# Runtime state & output
 brief.log
 last_briefing.html
+history/
+skills.json
 __pycache__/
 *.pyc

@@ -63,12 +63,21 @@ FIELDS = {
     "MAX_CONTENT_CHARS": ("Max content chars", "briefing", "Article text sent to the model"),
     "LLM_MAX_RETRIES": ("LLM max retries", "briefing", "Retries on 429/5xx"),
     "LLM_BACKOFF_BASE": ("LLM backoff base (s)", "briefing", "Exponential backoff seed"),
+    # --- output / skills ---
+    "SAVE_PDF": ("Save a PDF each run", "output", "true/false — dated PDF next to the script"),
+    "PDF_DIR": ("PDF folder", "output", "Blank = this folder"),
+    "ATTACH_PDF": ("Attach PDF to email", "output", "true/false"),
+    "CV_PATH": ("CV file", "output", "PDF used for the weekly skills gap; blank = the bundled name"),
+    "SKILLS_WINDOW_DAYS": ("Skills window (days)", "output", "How much news history the gap analysis reads"),
+    "MAX_SKILL_GAPS": ("Max skills suggested", "output", "Entries in 'skills to acquire'"),
+    "HISTORY_KEEP_DAYS": ("Keep history (days)", "output", "Older daily history files are pruned"),
 }
 
 SECTION_TITLES = {
     "email": "Email delivery",
     "llm": "Model endpoint",
     "briefing": "Briefing behaviour",
+    "output": "PDF archive & weekly skills gap",
 }
 
 # Falls back to these (defined in config.py) when a key is absent from .env.
@@ -77,6 +86,8 @@ CODE_DEFAULTS = {
     "WINDOW_HOURS": "24", "PER_FEED_LIMIT": "10", "DETAIL_LIMIT": "20",
     "CONCURRENCY": "3", "EXTRACT_TIMEOUT": "90", "MAX_CONTENT_CHARS": "12000",
     "LLM_MAX_RETRIES": "4", "LLM_BACKOFF_BASE": "2",
+    "SAVE_PDF": "true", "ATTACH_PDF": "false", "SKILLS_WINDOW_DAYS": "7",
+    "MAX_SKILL_GAPS": "8", "HISTORY_KEEP_DAYS": "60",
 }
 
 
@@ -137,10 +148,16 @@ def validate(key: str, value: str) -> str | None:
                 return f"not a valid email address: {part}"
     if key == "SMTP_SECURITY" and v and v.lower() not in ("ssl", "starttls", "plain"):
         return "must be one of: ssl, starttls, plain"
+    if key in ("SAVE_PDF", "ATTACH_PDF") and v and v.lower() not in (
+            "true", "false", "yes", "no", "1", "0", "on", "off"):
+        return "must be true or false"
+    if key == "CV_PATH" and v and not Path(v if Path(v).is_absolute() else HERE / v).exists():
+        return f"file not found: {v}"
     if key == "LLM_BASE_URL" and v and not v.startswith(("http://", "https://")):
         return "must start with http:// or https://"
     if key in ("SMTP_PORT", "WINDOW_HOURS", "PER_FEED_LIMIT", "DETAIL_LIMIT",
-               "CONCURRENCY", "EXTRACT_TIMEOUT", "MAX_CONTENT_CHARS", "LLM_MAX_RETRIES"):
+               "CONCURRENCY", "EXTRACT_TIMEOUT", "MAX_CONTENT_CHARS", "LLM_MAX_RETRIES",
+               "SKILLS_WINDOW_DAYS", "MAX_SKILL_GAPS", "HISTORY_KEEP_DAYS"):
         if v and not v.isdigit():
             return "must be a whole number"
     if key == "LLM_BACKOFF_BASE" and v:
@@ -166,7 +183,7 @@ def show():
         print(f"No .env yet at {ENV}. Run ./configure.py to create one.")
         return
     print(f"Config: {ENV}\n")
-    for sect in ("email", "llm", "briefing"):
+    for sect in ("email", "llm", "briefing", "output"):
         print(f"  {SECTION_TITLES[sect]}")
         for key, (label, s, _) in FIELDS.items():
             if s != sect:
@@ -185,7 +202,12 @@ def show():
             print(f"    {key:<18} {shown}")
         print()
     print("  Schedule")
-    print(f"    cron              {current_cron() or '(not scheduled)'}")
+    lines = current_cron(all_lines=True)
+    if lines:
+        for ln in lines:
+            print(f"    {ln}")
+    else:
+        print("    (not scheduled)")
 
 
 # ------------------------------------------------------------------ interactive
@@ -328,25 +350,28 @@ def test_email() -> int:
 
 
 # ------------------------------------------------------------------ cron
-def current_cron() -> str:
+def current_cron(all_lines: bool = False):
     try:
         out = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
     except FileNotFoundError:
-        return ""
-    for line in out.splitlines():
-        if "ai-news-briefing/run.sh" in line and not line.strip().startswith("#"):
-            return line.strip()
-    return ""
+        return [] if all_lines else ""
+    found = [ln.strip() for ln in out.splitlines()
+             if "ai-news-briefing/run.sh" in ln and not ln.strip().startswith("#")]
+    if all_lines:
+        return found
+    return found[0] if found else ""
 
 
-def set_schedule(spec: str) -> int:
+def set_schedule(spec: str, weekly_day: int | None = None) -> int:
     try:
         existing = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
     except FileNotFoundError:
         print("!! crontab not available on this system.")
         return 1
     kept = [ln for ln in existing.splitlines()
-            if "ai-news-briefing/run.sh" not in ln and "AI News Briefing" not in ln]
+            if "ai-news-briefing/run.sh" not in ln
+            and "AI News Briefing" not in ln
+            and "skills-gap section" not in ln]
 
     if spec.lower() in ("off", "none", "disable"):
         new = "\n".join(kept).strip()
@@ -362,15 +387,23 @@ def set_schedule(spec: str) -> int:
     if not (0 <= hh <= 23 and 0 <= mm <= 59):
         print("!! Hour must be 0-23 and minute 0-59.")
         return 2
+    # Mon-Sat get the plain briefing; the weekly day also runs the CV skills-gap
+    # analysis. Split this way so you still get exactly one email per day.
+    wd = weekly_day if weekly_day is not None else 0          # 0 = Sunday
+    others = ",".join(str(d) for d in range(7) if d != wd)
     kept += ["# AI News Briefing — daily, local time",
-             f"{mm} {hh} * * * {RUN_SH}"]
+             f"{mm} {hh} * * {others} {RUN_SH}",
+             "# Weekly: same briefing plus the CV skills-gap section",
+             f"{mm} {hh} * * {wd} {RUN_SH} --weekly"]
     subprocess.run(["crontab", "-"], input="\n".join(kept).strip() + "\n", text=True, check=True)
     tz = ""
     try:
         tz = subprocess.run(["date", "+%Z"], capture_output=True, text=True).stdout.strip()
     except Exception:
         pass
+    days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
     print(f"Scheduled daily at {hh:02d}:{mm:02d} {tz} (cron uses local time).")
+    print(f"  {days[wd]}'s run also includes the CV skills-gap section.")
     return 0
 
 
@@ -384,18 +417,21 @@ def main() -> int:
     p.add_argument("--email", action="store_true", help="configure email delivery only")
     p.add_argument("--llm", action="store_true", help="configure the model endpoint only")
     p.add_argument("--briefing", action="store_true", help="configure briefing options only")
+    p.add_argument("--output", action="store_true", help="configure PDF + skills options only")
     p.add_argument("--set", action="append", metavar="KEY=VALUE", default=[],
                    help="set a value non-interactively (repeatable)")
     p.add_argument("--test-llm", action="store_true", help="check the model endpoint answers")
     p.add_argument("--test-email", action="store_true", help="send a small test message")
     p.add_argument("--schedule", metavar="HH:MM|off", help="set or remove the daily cron run")
+    p.add_argument("--weekly-day", type=int, choices=range(7), metavar="0-6",
+                   help="day for the skills-gap run (0=Sun .. 6=Sat; default 0)")
     a = p.parse_args()
 
     if a.show:
         show()
         return 0
     if a.schedule:
-        return set_schedule(a.schedule)
+        return set_schedule(a.schedule, a.weekly_day)
     if a.test_llm and not a.set:
         return test_llm()
     if a.test_email and not a.set:
@@ -429,9 +465,10 @@ def main() -> int:
             rc |= test_email()
         return rc
 
-    sections = [s for s, on in (("email", a.email), ("llm", a.llm), ("briefing", a.briefing)) if on]
+    sections = [s for s, on in (("email", a.email), ("llm", a.llm),
+                                ("briefing", a.briefing), ("output", a.output)) if on]
     if not sections:
-        sections = ["email", "llm", "briefing"]
+        sections = ["email", "llm", "briefing", "output"]
     try:
         interactive(sections)
     except (KeyboardInterrupt, EOFError):

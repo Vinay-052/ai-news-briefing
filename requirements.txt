@@ -6,3 +6,8 @@ beautifulsoup4
 # Optional: nicer article extraction (pulls lxml). Falls back to BeautifulSoup
 # if absent, so it's safe to omit on very small boxes.
 trafilatura
+
+# PDF archive of each briefing + CV text extraction for the skills gap.
+# Both pure Python (universal wheels) so they install fine on a Raspberry Pi.
+fpdf2
+pypdf

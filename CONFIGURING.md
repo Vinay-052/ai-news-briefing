@@ -91,6 +91,32 @@ To permanently add a source to the preset, edit `AI_NEWS_SOURCES` in `sources.py
 ./configure.py --set KEYWORDS=             # remove the filter
 ```
 
+### PDF archive
+```bash
+./configure.py --set SAVE_PDF=false          # stop saving PDFs
+./configure.py --set PDF_DIR=/home/vinay/briefings   # keep them elsewhere
+./configure.py --set ATTACH_PDF=true         # attach the PDF to the email too
+```
+Files are named `AI_News_Briefing_<date>_<HHMM>.pdf`. They're gitignored, and
+nothing prunes them — delete old ones yourself if they pile up.
+
+### Weekly skills gap / your CV
+```bash
+./configure.py --set CV_PATH=/home/vinay/docs/my_cv.pdf   # after moving/renaming it
+./skills.py refresh-cv                       # re-read it after an update
+./configure.py --set SKILLS_WINDOW_DAYS=14   # analyse 14 days of news instead of 7
+./configure.py --set MAX_SKILL_GAPS=5        # shorter list
+./configure.py --schedule 10:00 --weekly-day 6   # run the skills analysis on Saturday
+```
+Mark things off as you learn them so they stop being suggested:
+```bash
+./skills.py learned "vLLM / SGLang serving"
+./skills.py dismiss "Mojo"        # never suggest this one
+./skills.py show                  # what's known, learned, and still open
+```
+The CV must be a **text** PDF — a scanned image won't extract (the tool says so
+rather than silently producing nothing).
+
 ### If the gateway rate-limits you (HTTP 429)
 The run already retries with backoff. If it's still noisy, slow it down:
 ```bash
@@ -123,6 +149,13 @@ The run already retries with backoff. If it's still noisy, slow it down:
 | `MAX_CONTENT_CHARS` | `12000` | Article text sent to the model |
 | `LLM_MAX_RETRIES` | `4` | Retries on 429/5xx |
 | `LLM_BACKOFF_BASE` | `2` | Backoff seed (seconds) |
+| `SAVE_PDF` | `true` | Save a dated PDF of each briefing |
+| `PDF_DIR` | this folder | Where those PDFs go |
+| `ATTACH_PDF` | `false` | Also attach the PDF to the email |
+| `CV_PATH` | bundled CV name | PDF used for the weekly skills gap |
+| `SKILLS_WINDOW_DAYS` | `7` | Days of news history the gap analysis reads |
+| `MAX_SKILL_GAPS` | `8` | Entries in "skills to acquire" |
+| `HISTORY_KEEP_DAYS` | `60` | Prune daily history older than this |
 
 ---
 
@@ -157,6 +190,10 @@ the cheap check.
 | Cron didn't run | `crontab -l`; check `brief.log`; confirm `run.sh` is executable |
 | Few articles, many errors | Usually rate limiting — see `429` above |
 | Broke something | `cp .env.bak .env` restores the previous config |
+| No PDF appeared | Check `brief.log`; PDF errors are logged but never block the email |
+| Skills section missing | Only the `--weekly` run adds it; force one with `./skills.py gaps` |
+| "no news history yet" | History builds up per run — do a `./run.sh --dry-run` first |
+| CV extracts nothing | It's a scanned image, not a text PDF — export a text version |
 
 Logs: `brief.log` (appended every run). Last output: `last_briefing.html`.
 

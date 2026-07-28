@@ -54,6 +54,7 @@ from render import render_news_html
 from config import CONFIG
 
 log = logging.getLogger("news-brief")
+HERE = Path(__file__).resolve().parent
 
 _TRACKING = re.compile(r"^(utm_|mc_|mkt_|ref$|ref_|gclid$|fbclid$|igshid$|spm$|cmpid$)", re.I)
 _FEED_VERSIONS = ("rss", "atom", "rdf")
@@ -236,15 +237,17 @@ def _omit_temperature(model: str) -> bool:
     return bool(mm and (int(mm.group(1)), int(mm.group(2))) >= (4, 7))
 
 
-async def llm_call(client: httpx.AsyncClient, prompt: str, timeout: int) -> str:
+async def llm_call(client: httpx.AsyncClient, prompt: str, timeout: int,
+                   max_tokens: int = 2048) -> str:
     """POST to an OpenAI-compatible endpoint, retrying on rate limits / 5xx.
 
     Gateways throttle when ~100+ articles are summarized in one run, so a bare
     call loses those articles. Honor Retry-After when present, else exponential
-    backoff with jitter.
+    backoff with jitter. `max_tokens` matters for long structured replies (the
+    skills-gap JSON needs far more room than a single article summary).
     """
     url = CONFIG.LLM_BASE_URL.rstrip("/") + "/chat/completions"
-    payload = {"model": CONFIG.LLM_MODEL, "max_tokens": 2048,
+    payload = {"model": CONFIG.LLM_MODEL, "max_tokens": max_tokens,
                "messages": [{"role": "user", "content": prompt}]}
     if not _omit_temperature(CONFIG.LLM_MODEL):
         payload["temperature"] = 0.2
@@ -631,13 +634,19 @@ def _html_to_text(html: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", re.sub(r"\n[ \t]+", "\n", t)).strip()
 
 
-def send_email(html: str, subject: str):
+def send_email(html: str, subject: str, attach: "Path | None" = None):
     msg = EmailMessage()
     msg["From"] = CONFIG.MAIL_FROM
     msg["To"] = CONFIG.MAIL_TO
     msg["Subject"] = subject
     msg.set_content(_html_to_text(html) or "See the HTML version.")
     msg.add_alternative(html, subtype="html")
+    if attach:
+        try:
+            msg.add_attachment(Path(attach).read_bytes(), maintype="application",
+                               subtype="pdf", filename=Path(attach).name)
+        except OSError as e:
+            log.warning("could not attach %s: %s", attach, e)
     ctx = ssl.create_default_context()
     if CONFIG.SMTP_SECURITY == "ssl":
         with smtplib.SMTP_SSL(CONFIG.SMTP_HOST, CONFIG.SMTP_PORT, context=ctx, timeout=30) as s:
@@ -660,26 +669,89 @@ def _sources():
     return preset_source_set()["sources"]
 
 
+async def _skills_report(news: dict):
+    """Weekly extra: compare the recent news against the CV for missing skills."""
+    import skills_gap as sg
+
+    state = sg.load_state()
+    articles = sg.load_history(CONFIG.SKILLS_WINDOW_DAYS) or news.get("articles") or []
+    if not articles:
+        log.warning("skills: no news history yet — skipping")
+        return None
+    cv = Path(CONFIG.CV_PATH) if CONFIG.CV_PATH else (HERE / "Vinay_Balraj_AI_Developer_CV.pdf")
+    if not cv.is_absolute():
+        cv = HERE / cv
+
+    limits = httpx.Limits(max_connections=4)
+    async with httpx.AsyncClient(follow_redirects=True, limits=limits, timeout=30) as client:
+        async def llm(prompt: str, max_tokens: int = 2048) -> str:
+            return await llm_call(client, prompt, CONFIG.EXTRACT_TIMEOUT, max_tokens=max_tokens)
+        try:
+            await sg.ensure_cv_skills(state, cv, llm, log=log.info)
+        except (FileNotFoundError, ValueError) as e:
+            log.error("skills: CV unusable (%s) — set CV_PATH in .env", e)
+            return None
+        report = await sg.analyze(state, articles, llm,
+                                 max_gaps=CONFIG.MAX_SKILL_GAPS, log=log.info)
+    sg.save_state(state)
+    log.info("skills: %d gap(s) from %d items", len(report.get("gaps") or []),
+             report.get("articles_considered", 0))
+    return report
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     dry = "--dry-run" in sys.argv
+    weekly = "--weekly" in sys.argv
     if not (CONFIG.LLM_BASE_URL and CONFIG.LLM_API_KEY and CONFIG.LLM_MODEL):
         log.error("LLM_BASE_URL / LLM_API_KEY / LLM_MODEL not configured in .env")
         sys.exit(2)
+
     news = asyncio.run(run(_sources()))
-    html = render_news_html(news, detail_limit=CONFIG.DETAIL_LIMIT)
-    subject = f"AI News Briefing — {datetime.now():%b %d, %Y}"
+
+    # Persist this run so the weekly skills analysis has a window of news.
+    import skills_gap as sg
+    try:
+        sg.append_history(news)
+        sg.prune_history(CONFIG.HISTORY_KEEP_DAYS)
+    except OSError as e:
+        log.warning("could not write history: %s", e)
+
+    skills = asyncio.run(_skills_report(news)) if weekly else None
+
+    html = render_news_html(news, detail_limit=CONFIG.DETAIL_LIMIT, skills=skills)
+    stamp = datetime.now()
+    subject = f"AI News Briefing — {stamp:%b %d, %Y}" + (" + skills gap" if skills else "")
+
+    # Always keep a dated PDF copy alongside the script.
+    pdf_path = None
+    if CONFIG.SAVE_PDF:
+        try:
+            from pdf_report import render_pdf, timestamped_name
+            pdf_dir = Path(CONFIG.PDF_DIR) if CONFIG.PDF_DIR else HERE
+            if not pdf_dir.is_absolute():
+                pdf_dir = HERE / pdf_dir
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+            pdf_path = render_pdf(news, pdf_dir / timestamped_name(when=stamp),
+                                  detail_limit=CONFIG.DETAIL_LIMIT, skills=skills)
+            log.info("saved PDF: %s", pdf_path)
+        except Exception as e:  # never lose the email over a PDF problem
+            log.error("PDF generation failed (%s) — continuing", e)
+
     if dry:
-        out = Path(__file__).resolve().parent / "last_briefing.html"
+        out = HERE / "last_briefing.html"
         out.write_text(html, encoding="utf-8")
-        log.info("dry-run: wrote %s (%d articles, %d errors)", out, len(news["articles"]), len(news["errors"]))
+        log.info("dry-run: wrote %s (%d articles, %d errors)%s",
+                 out, len(news["articles"]), len(news["errors"]),
+                 f"; pdf {pdf_path.name}" if pdf_path else "")
         return
     if not (CONFIG.SMTP_HOST and CONFIG.MAIL_TO):
         log.error("SMTP_HOST / MAIL_TO not configured in .env")
         sys.exit(2)
-    send_email(html, subject)
-    log.info("Sent briefing: %d articles from %d sources to %s",
-             len(news["articles"]), len(news["input_sources"]), CONFIG.MAIL_TO)
+    send_email(html, subject, attach=pdf_path if CONFIG.ATTACH_PDF else None)
+    log.info("Sent briefing: %d articles from %d sources to %s%s",
+             len(news["articles"]), len(news["input_sources"]), CONFIG.MAIL_TO,
+             " (with skills gap)" if skills else "")
 
 
 if __name__ == "__main__":
