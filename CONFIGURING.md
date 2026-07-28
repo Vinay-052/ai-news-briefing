@@ -146,6 +146,8 @@ the cheap check.
 
 | Symptom | Cause / fix |
 |---|---|
+| `SyntaxError: set -euo pipefail` | You ran `python3 run.sh`. It's a bash script — use `./run.sh` or `bash run.sh` |
+| `ModuleNotFoundError: feedparser` | You used the system python — use `./run.sh` or `./venv/bin/python brief.py` |
 | `HTTP 401` on `--test-llm` | Bad `LLM_API_KEY` |
 | `HTTP 404` on `--test-llm` | `LLM_BASE_URL` missing `/v1`, or wrong `LLM_MODEL` |
 | `HTTP 429` | Rate limited — lower `CONCURRENCY`, raise `LLM_MAX_RETRIES` |

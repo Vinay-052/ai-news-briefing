@@ -31,9 +31,22 @@ from email.message import EmailMessage
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit, parse_qsl, urlencode
 
-import feedparser
-import httpx
-from bs4 import BeautifulSoup
+try:
+    import feedparser
+    import httpx
+    from bs4 import BeautifulSoup
+except ImportError as _e:  # wrong interpreter, or venv not built yet
+    _here = Path(__file__).resolve().parent
+    sys.stderr.write(
+        f"\nMissing dependency: {_e.name}\n\n"
+        f"Run this with the project's venv, not the system python:\n"
+        f"    {_here}/venv/bin/python brief.py --dry-run\n"
+        f"  or simply:\n"
+        f"    {_here}/run.sh --dry-run          (bash, not python3)\n\n"
+        f"If venv/ doesn't exist yet:\n"
+        f"    cd {_here} && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt\n\n"
+    )
+    sys.exit(2)
 
 import taxonomy as tax
 from sources import best_feed, known_strategy, FEED_SUFFIXES, preset_source_set
