@@ -56,6 +56,7 @@ FIELDS = {
     "LLM_API_KEY": ("LLM API key", "llm", "Bearer token; leave empty for local ollama"),
     "LLM_MODEL": ("LLM model", "llm", "ollama: e.g. gemma4:26b — openai: e.g. gpt-4o"),
     "LLM_NUM_CTX": ("Context window (ollama)", "llm", "Tokens; must fit MAX_CONTENT_CHARS/4 + prompt"),
+    "LLM_MAX_NUM_CTX": ("Max context (ollama)", "llm", "Ceiling when a long call needs a bigger window"),
     "LLM_THINK": ("Thinking mode (ollama)", "llm", "true/false — off is faster and enough for JSON"),
     "LLM_KEEP_ALIVE": ("Keep model loaded (ollama)", "llm", "e.g. 30m — avoids reloading weights each call"),
     "LLM_STARTUP_WAIT": ("Wait for ollama (s)", "llm", "How long a run waits for the server before giving up"),
@@ -93,7 +94,8 @@ SECTION_TITLES = {
 CODE_DEFAULTS = {
     "SMTP_PORT": "465", "SMTP_SECURITY": "ssl",
     "LLM_PROVIDER": "auto", "LLM_BASE_URL": "http://localhost:11434",
-    "LLM_MODEL": "gemma4:26b", "LLM_NUM_CTX": "8192", "LLM_THINK": "false",
+    "LLM_MODEL": "gemma4:26b", "LLM_NUM_CTX": "8192", "LLM_MAX_NUM_CTX": "32768",
+    "LLM_THINK": "false",
     "LLM_KEEP_ALIVE": "30m", "LLM_TIMEOUT": "900 (ollama)", "LLM_CONCURRENCY": "1 (ollama)",
     "LLM_STARTUP_WAIT": "120",
     "WINDOW_HOURS": "24", "PER_FEED_LIMIT": "10", "DETAIL_LIMIT": "20",
@@ -179,7 +181,8 @@ def validate(key: str, value: str) -> str | None:
         return "must start with http:// or https://"
     if key in ("SMTP_PORT", "WINDOW_HOURS", "PER_FEED_LIMIT", "DETAIL_LIMIT",
                "CONCURRENCY", "EXTRACT_TIMEOUT", "MAX_CONTENT_CHARS", "LLM_MAX_RETRIES",
-               "LLM_NUM_CTX", "LLM_TIMEOUT", "LLM_CONCURRENCY", "LLM_STARTUP_WAIT",
+               "LLM_NUM_CTX", "LLM_MAX_NUM_CTX", "LLM_TIMEOUT", "LLM_CONCURRENCY",
+               "LLM_STARTUP_WAIT",
                "SKILLS_WINDOW_DAYS", "MAX_SKILL_GAPS", "HISTORY_KEEP_DAYS"):
         if v and not v.isdigit():
             return "must be a whole number"

@@ -64,6 +64,14 @@ at the default 12 000 chars that's ~3 800, comfortably inside 8192. Raise the
 window *or* lower `MAX_CONTENT_CHARS`; if the window is too small Ollama
 truncates the article silently and the summaries get vague.
 
+num_ctx covers the reply too, so a call that asks for 8000 tokens back needs
+room for both. The weekly skills analysis does exactly that, and would overflow
+8192 — so a call that doesn't fit gets a bigger window automatically (logged as
+`growing context to N`), up to `LLM_MAX_NUM_CTX`. Ollama reloads the model when
+the window changes, which costs a minute once a week; the ~90 article calls all
+share the configured window and never reload. Lower the cap if the extra KV
+cache pushes the box into swap.
+
 A full run is ~90 article calls, one at a time. Ballpark at 26B/Q4 on a
 consumer GPU: 25-45 s each, so 40-70 minutes. To speed it up: a smaller model,
 `PER_FEED_LIMIT=5`, or `MAX_CONTENT_CHARS=8000` (prompt processing dominates).
@@ -179,6 +187,7 @@ The run already retries with backoff. If it's still noisy, slow it down:
 | `LLM_API_KEY` | — | Sent as `Authorization: Bearer <key>`; unused for ollama |
 | `LLM_MODEL` | `gemma4:26b` | Model id / Ollama tag |
 | `LLM_NUM_CTX` | `8192` | Ollama context window (tokens) |
+| `LLM_MAX_NUM_CTX` | `32768` | Ceiling when a call needs a window bigger than `LLM_NUM_CTX` |
 | `LLM_THINK` | `false` | Ollama thinking mode |
 | `LLM_KEEP_ALIVE` | `30m` | How long Ollama keeps the weights loaded |
 | `LLM_STARTUP_WAIT` | `120` | Seconds a run waits for the Ollama server before aborting |

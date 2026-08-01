@@ -63,6 +63,9 @@ class Config:
     # plus the prompt, or Ollama silently truncates the article. Thinking is off
     # by default: it burns the num_predict budget without improving the JSON.
     LLM_NUM_CTX = _int("LLM_NUM_CTX", 8192)
+    # Ceiling for the automatic growth in brief._fit_num_ctx. Raise it only if
+    # the machine has the RAM for the extra KV cache.
+    LLM_MAX_NUM_CTX = _int("LLM_MAX_NUM_CTX", 32768)
     LLM_THINK = _bool("LLM_THINK", False)
     LLM_KEEP_ALIVE = _get("LLM_KEEP_ALIVE", "30m")   # keep weights resident between calls
     # Cron may fire before the ollama service is accepting requests (e.g. just

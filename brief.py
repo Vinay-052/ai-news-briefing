@@ -253,6 +253,29 @@ def _llm_sem() -> asyncio.Semaphore:
     return sem
 
 
+def _fit_num_ctx(prompt: str, max_tokens: int) -> int:
+    """Window big enough for this prompt *and* its reply.
+
+    num_ctx covers input + output together. An article summary fits the
+    configured window easily, but the weekly skills analysis sends ~60 news
+    items and asks for 8000 tokens back — over the default 8192, where Ollama
+    silently drops the front of the prompt and analyses less news than it
+    claims. Grow the window for those calls instead (Ollama reloads the model
+    when it changes, which is worth it once a week), capped so a runaway prompt
+    can't ask for a window the machine cannot hold.
+    """
+    needed = int(len(prompt) / 3.5) + max_tokens + 256      # ~3.5 chars/token, plus chat overhead
+    if needed <= CONFIG.LLM_NUM_CTX:
+        return CONFIG.LLM_NUM_CTX
+    fitted = 1 << max(needed - 1, 1).bit_length()           # next power of two
+    if fitted > CONFIG.LLM_MAX_NUM_CTX:
+        log.warning("prompt+reply needs ~%d tokens but LLM_MAX_NUM_CTX is %d — "
+                    "the model will truncate", needed, CONFIG.LLM_MAX_NUM_CTX)
+        return CONFIG.LLM_MAX_NUM_CTX
+    log.info("growing context to %d for this call (needs ~%d)", fitted, needed)
+    return fitted
+
+
 def _ollama_request(prompt: str, max_tokens: int) -> tuple:
     # Native /api/chat rather than Ollama's /v1 shim: only the native API takes
     # num_ctx (the shim defaults to a small window and truncates articles) and
@@ -260,7 +283,7 @@ def _ollama_request(prompt: str, max_tokens: int) -> tuple:
     base = re.sub(r"/v1/?$", "", CONFIG.LLM_BASE_URL.rstrip("/"))
     payload = {"model": CONFIG.LLM_MODEL, "stream": False,
                "keep_alive": CONFIG.LLM_KEEP_ALIVE,
-               "options": {"num_ctx": CONFIG.LLM_NUM_CTX,
+               "options": {"num_ctx": _fit_num_ctx(prompt, max_tokens),
                            "num_predict": max_tokens,
                            "temperature": 0.2},
                "messages": [{"role": "user", "content": prompt}]}
