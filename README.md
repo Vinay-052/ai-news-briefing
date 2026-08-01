@@ -8,27 +8,44 @@ Each run also saves a dated PDF of the briefing, and once a week it compares the
 news against your CV and tells you which skills to pick up.
 
 **It runs on a local model by default.** Point it at [Ollama](https://ollama.com)
-and the whole thing costs nothing per run, keeps your reading list on your own
-machine, and never hits a rate limit or a token quota. Any
-OpenAI-compatible gateway still works if you prefer one.
+and the whole thing costs nothing per run and keeps your reading list on your own
+machine. No GPU? [Ollama Cloud](https://docs.ollama.com/cloud) uses the identical
+API, so a 16 GB N100 mini PC can run the whole job. Any OpenAI-compatible gateway
+works too.
 
 ## LLM backend
 Two providers, chosen with `LLM_PROVIDER`:
 
-| | `ollama` (default) | `openai` |
-|---|---|---|
-| Endpoint | `POST {base}/api/chat` (native) | `POST {base}/chat/completions` |
-| Base URL | `http://localhost:11434` | e.g. `https://api.openai.com/v1` |
-| API key | not used | required |
-| Cost / quota | none | per token |
+| | `ollama` local (default) | `ollama` cloud | `openai` |
+|---|---|---|---|
+| Endpoint | `POST {base}/api/chat` | same, on `ollama.com` | `POST {base}/chat/completions` |
+| Base URL | `http://localhost:11434` | `https://ollama.com` | e.g. `https://api.openai.com/v1` |
+| API key | not used | required | required |
+| Hardware | your GPU/RAM | none | none |
+| Cost | electricity | subscription | per token |
 
 `LLM_PROVIDER=auto` sniffs the base URL and picks `ollama` for an Ollama host.
 
+### Local Ollama
 ```bash
 ollama pull gemma4:26b                      # ~17 GB
 ./configure.py --use-ollama gemma4:26b      # writes provider/URL/model, clears the API key
 ./configure.py --test-llm                   # confirm it answers
 ```
+
+### Ollama Cloud
+The same native API on somebody else's GPU, so a small always-on box (an N100
+mini PC, a Pi) can run the whole briefing:
+
+```bash
+./configure.py --set LLM_API_KEY=<your-key> --use-ollama-cloud gpt-oss:120b
+./configure.py --test-llm
+```
+Cloud runs skip the local-only bits automatically: no `keep_alive` (there are no
+weights to hold), no waiting for a service to boot, and `LLM_CONCURRENCY`
+defaults to `CONCURRENCY` instead of 1, since a hosted service serves parallel
+requests. Rate limits surface as HTTP 429, which the existing retry/backoff
+already handles.
 
 Why the native `/api/chat` and not Ollama's `/v1` shim: only the native API
 accepts `num_ctx` (the shim's default window silently truncates a 12 000-char

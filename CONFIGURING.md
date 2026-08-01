@@ -14,6 +14,7 @@ cd ~/ai-news-briefing
 ./configure.py --briefing      # just the briefing behaviour
 ./configure.py --set KEY=VALUE # change one thing, no prompts (repeatable)
 ./configure.py --use-ollama    # switch to a local Ollama model
+./configure.py --use-ollama-cloud gpt-oss:120b   # switch to Ollama Cloud
 ./configure.py --test-llm      # verify the model endpoint answers
 ./configure.py --test-email    # send a small test message
 ./configure.py --schedule 10:00  # change the daily run time (or `off`)
@@ -50,6 +51,29 @@ An Ollama server on another machine works the same way:
                --set LLM_MODEL=gemma4:26b --test-llm
 ```
 (That server needs `OLLAMA_HOST=0.0.0.0:11434` to accept remote calls.)
+
+### Move to Ollama Cloud (hosted, no GPU needed)
+```bash
+# key from https://ollama.com/settings/keys
+./configure.py --set LLM_API_KEY=<key> --use-ollama-cloud gpt-oss:120b
+./configure.py --test-llm
+```
+It's the same native `/api/chat`, so only the base URL, key and model change.
+The run then needs almost nothing locally — enough CPU to parse feeds and
+render a PDF — which is why a 16 GB N100 mini PC is plenty.
+
+What changes automatically when the host is `ollama.com`:
+
+| | local server | cloud |
+|---|---|---|
+| `keep_alive` | sent | not sent (no resident weights) |
+| `LLM_STARTUP_WAIT` | waits for the service | skipped |
+| `LLM_CONCURRENCY` default | `1` (one GPU) | `CONCURRENCY` (parallel is fine) |
+| `LLM_TIMEOUT` default | `900` | `300` |
+| Model not in `/api/tags` | hard error | warning, tries anyway |
+
+Rate limits come back as HTTP 429 and are retried with backoff; if you hit them
+often, lower `LLM_CONCURRENCY` or `PER_FEED_LIMIT`.
 
 ### Tune a local model
 ```bash
@@ -184,7 +208,7 @@ The run already retries with backoff. If it's still noisy, slow it down:
 | `SMTP_PASS` | — | App password for Gmail |
 | `LLM_PROVIDER` | `auto` | `ollama` \| `openai` \| `auto` (sniffs the URL) |
 | `LLM_BASE_URL` | `http://localhost:11434` | Ollama root, or OpenAI-compatible base ending `/v1` |
-| `LLM_API_KEY` | — | Sent as `Authorization: Bearer <key>`; unused for ollama |
+| `LLM_API_KEY` | — | Sent as `Authorization: Bearer <key>`; needed for Ollama Cloud, unused for a local server |
 | `LLM_MODEL` | `gemma4:26b` | Model id / Ollama tag |
 | `LLM_NUM_CTX` | `8192` | Ollama context window (tokens) |
 | `LLM_MAX_NUM_CTX` | `32768` | Ceiling when a call needs a window bigger than `LLM_NUM_CTX` |

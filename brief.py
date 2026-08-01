@@ -282,14 +282,20 @@ def _ollama_request(prompt: str, max_tokens: int) -> tuple:
     # `think`.
     base = re.sub(r"/v1/?$", "", CONFIG.LLM_BASE_URL.rstrip("/"))
     payload = {"model": CONFIG.LLM_MODEL, "stream": False,
-               "keep_alive": CONFIG.LLM_KEEP_ALIVE,
                "options": {"num_ctx": _fit_num_ctx(prompt, max_tokens),
                            "num_predict": max_tokens,
                            "temperature": 0.2},
                "messages": [{"role": "user", "content": prompt}]}
+    if not CONFIG.OLLAMA_CLOUD:
+        # Only a server you run has weights to hold in memory.
+        payload["keep_alive"] = CONFIG.LLM_KEEP_ALIVE
     if not _THINK_UNSUPPORTED:
         payload["think"] = CONFIG.LLM_THINK
-    return base + "/api/chat", payload, {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
+    if CONFIG.LLM_API_KEY:
+        # Ollama Cloud, or a self-hosted server behind an authenticating proxy.
+        headers["Authorization"] = f"Bearer {CONFIG.LLM_API_KEY}"
+    return base + "/api/chat", payload, headers
 
 
 def _openai_request(prompt: str, max_tokens: int) -> tuple:
@@ -371,27 +377,42 @@ def preflight_ollama() -> str:
     Returns an error string, or "" when the server is ready.
     """
     base = re.sub(r"/v1/?$", "", CONFIG.LLM_BASE_URL.rstrip("/"))
-    deadline = time.monotonic() + max(0, CONFIG.LLM_STARTUP_WAIT)
-    waited, models = False, None
+    headers = {"Authorization": f"Bearer {CONFIG.LLM_API_KEY}"} if CONFIG.LLM_API_KEY else {}
+    # Cloud is somebody else's uptime problem: check it answers, then stop.
+    # Don't sit in a startup loop waiting for a service we don't control.
+    deadline = time.monotonic() + (0 if CONFIG.OLLAMA_CLOUD else max(0, CONFIG.LLM_STARTUP_WAIT))
+    waited, models, status = False, None, None
     while True:
         try:
-            r = httpx.get(base + "/api/tags", timeout=10)
-            if r.status_code == 200:
+            r = httpx.get(base + "/api/tags", timeout=15, headers=headers)
+            status = r.status_code
+            if status == 200:
                 models = [m.get("name", "") for m in r.json().get("models") or []]
                 break
+            if status in (401, 403):
+                return f"HTTP {status} from {base} — check LLM_API_KEY"
         except Exception:
             pass
         if time.monotonic() >= deadline:
+            if CONFIG.OLLAMA_CLOUD:
+                return (f"no usable answer from {base}"
+                        + (f" (HTTP {status})" if status else "")
+                        + " — check the network and LLM_API_KEY")
             return (f"no answer from {base} after {CONFIG.LLM_STARTUP_WAIT}s — "
                     "is ollama running? (systemctl status ollama)")
         if not waited:
             log.info("waiting for ollama at %s …", base)
             waited = True
         time.sleep(3)
-    if models is not None and CONFIG.LLM_MODEL not in models and \
-            f"{CONFIG.LLM_MODEL}:latest" not in models:
-        return (f"model {CONFIG.LLM_MODEL!r} is not pulled (have: "
-                f"{', '.join(models) or 'none'}) — run: ollama pull {CONFIG.LLM_MODEL}")
+    if models and CONFIG.LLM_MODEL not in models and f"{CONFIG.LLM_MODEL}:latest" not in models:
+        if CONFIG.OLLAMA_CLOUD:
+            # Cloud model lists aren't a local inventory — a name missing here
+            # isn't proof it won't serve, so warn and let the call decide.
+            log.warning("ollama cloud did not list %s (offers: %s) — trying anyway",
+                        CONFIG.LLM_MODEL, ", ".join(models[:8]))
+        else:
+            return (f"model {CONFIG.LLM_MODEL!r} is not pulled (have: "
+                    f"{', '.join(models) or 'none'}) — run: ollama pull {CONFIG.LLM_MODEL}")
     return ""
 
 

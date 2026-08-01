@@ -6,6 +6,7 @@ environment variables override it. No external dependency (no python-dotenv).
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 
@@ -117,11 +118,33 @@ def _resolve_provider(cfg) -> str:
     return "ollama" if ("11434" in url or "ollama" in url) else "openai"
 
 
+def _is_ollama_cloud(cfg) -> bool:
+    """Ollama Cloud (https://ollama.com) rather than a server you run.
+
+    It speaks the same native API, but it is multi-tenant: it will serve
+    parallel requests, it has no weights to keep resident, and its model list
+    is not something you `ollama pull`. Those three differences drive the
+    defaults below and the request built in brief._ollama_request.
+    """
+    host = urlparse(cfg.LLM_BASE_URL or "").hostname or ""
+    return host.lower().endswith("ollama.com")
+
+
 CONFIG = Config()
 
 # Resolved once, so callers never re-derive it.
 CONFIG.PROVIDER = _resolve_provider(CONFIG)
+CONFIG.OLLAMA_CLOUD = CONFIG.PROVIDER == "ollama" and _is_ollama_cloud(CONFIG)
 if not CONFIG.LLM_TIMEOUT:
-    CONFIG.LLM_TIMEOUT = 900 if CONFIG.PROVIDER == "ollama" else CONFIG.EXTRACT_TIMEOUT
+    if CONFIG.OLLAMA_CLOUD:
+        # Hosted and fast, but the weekly analysis still asks for 8000 tokens —
+        # minutes, not the 90s an article summary needs.
+        CONFIG.LLM_TIMEOUT = 300
+    elif CONFIG.PROVIDER == "ollama":
+        CONFIG.LLM_TIMEOUT = 900
+    else:
+        CONFIG.LLM_TIMEOUT = CONFIG.EXTRACT_TIMEOUT
 if not CONFIG.LLM_CONCURRENCY:
-    CONFIG.LLM_CONCURRENCY = 1 if CONFIG.PROVIDER == "ollama" else CONFIG.CONCURRENCY
+    # One local GPU serves one request at a time; a hosted service does not.
+    CONFIG.LLM_CONCURRENCY = 1 if (CONFIG.PROVIDER == "ollama" and not CONFIG.OLLAMA_CLOUD) \
+        else CONFIG.CONCURRENCY

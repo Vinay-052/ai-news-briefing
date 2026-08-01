@@ -10,6 +10,7 @@ Stdlib only — runs with any python3, venv or not.
     ./configure.py --briefing           # just the briefing options
     ./configure.py --set MAIL_TO=a@b.c --set LLM_MODEL=gemma4:26b
     ./configure.py --use-ollama         # switch to a local Ollama server
+    ./configure.py --use-ollama-cloud gpt-oss:120b   # switch to Ollama Cloud
     ./configure.py --use-ollama gemma4:26b --test-llm
     ./configure.py --test-llm           # verify the model endpoint answers
     ./configure.py --test-email         # send a small test message
@@ -301,14 +302,52 @@ def resolved_provider(env: dict) -> str:
     return "ollama" if ("11434" in url or "ollama" in url) else "openai"
 
 
-def ollama_models(base: str) -> list:
-    """Names of the models the server has pulled ([] when unreachable)."""
+def is_cloud(base: str) -> bool:
+    from urllib.parse import urlparse
+    return (urlparse(base).hostname or "").lower().endswith("ollama.com")
+
+
+def ollama_models(base: str, key: str = "") -> list:
+    """Model names the server offers ([] when unreachable)."""
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
     try:
-        with urllib.request.urlopen(base + "/api/tags", timeout=10) as r:
+        req = urllib.request.Request(base + "/api/tags", headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read().decode())
         return [m.get("name", "") for m in data.get("models") or []]
     except Exception:
         return []
+
+
+def use_ollama_cloud(model: str = "") -> int:
+    """Point the briefing at Ollama Cloud (https://ollama.com)."""
+    env = read_env()
+    base = "https://ollama.com"
+    # Prefer an existing key; fall back to the variable ollama itself uses.
+    key = env.get("LLM_API_KEY", "") or os.environ.get("OLLAMA_API_KEY", "")
+    if not key:
+        print("!! No API key. Create one at https://ollama.com/settings/keys, then:")
+        print("   ./configure.py --set LLM_API_KEY=<key> --use-ollama-cloud <model>")
+        print("   (or export OLLAMA_API_KEY=<key> before running this)")
+        return 2
+    offered = ollama_models(base, key)
+    if not model:
+        model = env.get("LLM_MODEL", "")
+        if offered and model not in offered and f"{model}:latest" not in offered:
+            model = offered[0]
+        elif not offered and not model:
+            print("!! Could not list cloud models — pass one explicitly, "
+                  "e.g. --use-ollama-cloud gpt-oss:120b")
+            return 1
+    updates = {"LLM_PROVIDER": "ollama", "LLM_BASE_URL": base, "LLM_MODEL": model,
+               "LLM_API_KEY": key}
+    write_env(updates)
+    print(f"Switched to Ollama Cloud: {base}  model={model}")
+    print(f"  offers: {', '.join(offered) if offered else '(list unavailable)'}")
+    print("  keep_alive is not sent to cloud, and LLM_CONCURRENCY defaults to "
+          "CONCURRENCY (cloud serves parallel requests).")
+    print("Verify with:  ./configure.py --test-llm")
+    return 0
 
 
 def use_ollama(model: str = "") -> int:
@@ -355,21 +394,34 @@ def test_llm() -> int:
     headers = {"Content-Type": "application/json"}
     if provider == "ollama":
         base = re.sub(r"/v1/?$", "", base)
-        installed = ollama_models(base)
-        if not installed:
+        cloud = is_cloud(base)
+        if cloud and not key:
+            print("!! LLM_API_KEY must be set for Ollama Cloud "
+                  "(create one at https://ollama.com/settings/keys).")
+            return 2
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        offered = ollama_models(base, key)
+        if not offered and not cloud:
             print(f"  !! no answer from {base} — is Ollama running?")
             print("     → systemctl status ollama   (or: ollama serve)")
             return 1
-        if model not in installed and f"{model}:latest" not in installed:
-            print(f"  !! model {model!r} is not pulled. Installed: {', '.join(installed) or '(none)'}")
-            print(f"     → ollama pull {model}")
-            return 1
+        if offered and model not in offered and f"{model}:latest" not in offered:
+            if cloud:
+                print(f"  .. cloud did not list {model!r} (offers: {', '.join(offered[:8])}) "
+                      "— trying anyway")
+            else:
+                print(f"  !! model {model!r} is not pulled. Installed: {', '.join(offered)}")
+                print(f"     → ollama pull {model}")
+                return 1
         url = base + "/api/chat"
-        body = json.dumps({"model": model, "stream": False, "think": False,
-                           "keep_alive": env.get("LLM_KEEP_ALIVE", "30m") or "30m",
-                           "options": {"num_predict": 8,
-                                       "num_ctx": int(env.get("LLM_NUM_CTX", "8192") or 8192)},
-                           "messages": [{"role": "user", "content": "Reply with just: OK"}]}).encode()
+        payload = {"model": model, "stream": False, "think": False,
+                   "options": {"num_predict": 8,
+                               "num_ctx": int(env.get("LLM_NUM_CTX", "8192") or 8192)},
+                   "messages": [{"role": "user", "content": "Reply with just: OK"}]}
+        if not cloud:
+            payload["keep_alive"] = env.get("LLM_KEEP_ALIVE", "30m") or "30m"
+        body = json.dumps(payload).encode()
     else:
         url = base + "/chat/completions"
         headers["Authorization"] = f"Bearer {key}"
@@ -377,7 +429,7 @@ def test_llm() -> int:
                            "messages": [{"role": "user", "content": "Reply with just: OK"}]}).encode()
 
     print(f"POST {url}\n  provider: {provider}\n  model: {model}")
-    if provider == "ollama":
+    if provider == "ollama" and not is_cloud(base):
         print("  (first call loads the weights — this can take a minute)")
     try:
         with urllib.request.urlopen(
@@ -523,6 +575,8 @@ def main() -> int:
                    help="set a value non-interactively (repeatable)")
     p.add_argument("--use-ollama", nargs="?", const="", metavar="MODEL",
                    help="switch to a local Ollama server (default model: the first installed)")
+    p.add_argument("--use-ollama-cloud", nargs="?", const="", metavar="MODEL",
+                   help="switch to Ollama Cloud (needs LLM_API_KEY or OLLAMA_API_KEY)")
     p.add_argument("--test-llm", action="store_true", help="check the model endpoint answers")
     p.add_argument("--test-email", action="store_true", help="send a small test message")
     p.add_argument("--schedule", metavar="HH:MM|off", help="set or remove the daily cron run")
@@ -535,6 +589,9 @@ def main() -> int:
         return 0
     if a.schedule:
         return set_schedule(a.schedule, a.weekly_day)
+    if a.use_ollama_cloud is not None:
+        rc = use_ollama_cloud(a.use_ollama_cloud)
+        return rc or (test_llm() if a.test_llm else 0)
     if a.use_ollama is not None:
         rc = use_ollama(a.use_ollama)
         return rc or (test_llm() if a.test_llm else 0)
