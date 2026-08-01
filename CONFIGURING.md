@@ -13,6 +13,7 @@ cd ~/ai-news-briefing
 ./configure.py --llm           # just the model endpoint
 ./configure.py --briefing      # just the briefing behaviour
 ./configure.py --set KEY=VALUE # change one thing, no prompts (repeatable)
+./configure.py --use-ollama    # switch to a local Ollama model
 ./configure.py --test-llm      # verify the model endpoint answers
 ./configure.py --test-email    # send a small test message
 ./configure.py --schedule 10:00  # change the daily run time (or `off`)
@@ -105,9 +106,9 @@ Gmail needs a **16-character App Password**, not your normal login password
 ./configure.py --schedule off       # stop the automatic run
 crontab -l                          # see what's scheduled
 ```
-Cron uses **local time**, and this box is `Asia/Kolkata`, so `10:00` means
-10:00 IST. On a new machine set the zone first:
-`sudo timedatectl set-timezone Asia/Kolkata`.
+Cron uses **local time**, so `10:00` means 10:00 wherever the box thinks it
+is. On a new machine set the zone first:
+`sudo timedatectl set-timezone Asia/Kolkata` (or your own `Area/City`).
 
 ### Change which sources are read
 By default it uses the bundled 25-source AI preset in `sources.py`.
@@ -180,6 +181,7 @@ The run already retries with backoff. If it's still noisy, slow it down:
 | `LLM_NUM_CTX` | `8192` | Ollama context window (tokens) |
 | `LLM_THINK` | `false` | Ollama thinking mode |
 | `LLM_KEEP_ALIVE` | `30m` | How long Ollama keeps the weights loaded |
+| `LLM_STARTUP_WAIT` | `120` | Seconds a run waits for the Ollama server before aborting |
 | `LLM_TIMEOUT` | `900` ollama / `EXTRACT_TIMEOUT` | Per-call timeout (seconds) |
 | `LLM_CONCURRENCY` | `1` ollama / `CONCURRENCY` | Parallel model calls |
 | `SOURCES` | bundled preset | Comma-separated URLs; blank = preset |
@@ -193,9 +195,9 @@ The run already retries with backoff. If it's still noisy, slow it down:
 | `LLM_MAX_RETRIES` | `4` | Retries on 429/5xx |
 | `LLM_BACKOFF_BASE` | `2` | Backoff seed (seconds) |
 | `SAVE_PDF` | `true` | Save a dated PDF of each briefing |
-| `PDF_DIR` | this folder | Where those PDFs go |
+| `PDF_DIR` | this folder | Where those PDFs go (`~` allowed) |
 | `ATTACH_PDF` | `false` | Also attach the PDF to the email |
-| `CV_PATH` | bundled CV name | PDF used for the weekly skills gap |
+| `CV_PATH` | `cv.pdf` here | PDF used for the weekly skills gap (`~` allowed) |
 | `SKILLS_WINDOW_DAYS` | `7` | Days of news history the gap analysis reads |
 | `MAX_SKILL_GAPS` | `8` | Entries in "skills to acquire" |
 | `HISTORY_KEEP_DAYS` | `60` | Prune daily history older than this |
@@ -228,6 +230,8 @@ tens of minutes on a local model (and nothing). `--test-llm` is the cheap check.
 | `HTTP 404` on `--test-llm` | `LLM_BASE_URL` missing `/v1`, or wrong `LLM_MODEL` |
 | `HTTP 429` | Rate limited — lower `LLM_CONCURRENCY`, raise `LLM_MAX_RETRIES` |
 | `no answer from http://localhost:11434` | Ollama isn't running: `systemctl start ollama` (or `ollama serve`) |
+| Run aborts with `ollama: …` and exit 3 | Preflight failed — server down or model not pulled; nothing was emailed |
+| Cron runs right after a reboot | Raise `LLM_STARTUP_WAIT`, or `systemctl enable ollama` |
 | `model 'x' is not pulled` | `ollama pull x` — `--test-llm` lists what's installed |
 | Local run times out | Raise `LLM_TIMEOUT`; first call also pays the model-load time |
 | Local summaries look vague/generic | `LLM_NUM_CTX` too small for `MAX_CONTENT_CHARS` — the article got truncated |

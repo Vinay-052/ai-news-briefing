@@ -65,6 +65,9 @@ class Config:
     LLM_NUM_CTX = _int("LLM_NUM_CTX", 8192)
     LLM_THINK = _bool("LLM_THINK", False)
     LLM_KEEP_ALIVE = _get("LLM_KEEP_ALIVE", "30m")   # keep weights resident between calls
+    # Cron may fire before the ollama service is accepting requests (e.g. just
+    # after a reboot). Wait this long for it rather than failing every article.
+    LLM_STARTUP_WAIT = _int("LLM_STARTUP_WAIT", 120)
 
     # Email (SMTP)
     SMTP_HOST = _get("SMTP_HOST")

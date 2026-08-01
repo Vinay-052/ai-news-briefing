@@ -339,6 +339,39 @@ async def llm_call(client: httpx.AsyncClient, prompt: str, timeout: int = 0,
     raise RuntimeError(f"LLM call failed after {CONFIG.LLM_MAX_RETRIES + 1} attempts: {last_err}")
 
 
+def preflight_ollama() -> str:
+    """Wait for the local server, and confirm the model is pulled.
+
+    Cron can fire before `ollama.service` is ready. Without this, every article
+    burns its retries against a dead socket and the briefing arrives empty —
+    so fail loudly here instead, with the command that fixes it.
+    Returns an error string, or "" when the server is ready.
+    """
+    base = re.sub(r"/v1/?$", "", CONFIG.LLM_BASE_URL.rstrip("/"))
+    deadline = time.monotonic() + max(0, CONFIG.LLM_STARTUP_WAIT)
+    waited, models = False, None
+    while True:
+        try:
+            r = httpx.get(base + "/api/tags", timeout=10)
+            if r.status_code == 200:
+                models = [m.get("name", "") for m in r.json().get("models") or []]
+                break
+        except Exception:
+            pass
+        if time.monotonic() >= deadline:
+            return (f"no answer from {base} after {CONFIG.LLM_STARTUP_WAIT}s — "
+                    "is ollama running? (systemctl status ollama)")
+        if not waited:
+            log.info("waiting for ollama at %s …", base)
+            waited = True
+        time.sleep(3)
+    if models is not None and CONFIG.LLM_MODEL not in models and \
+            f"{CONFIG.LLM_MODEL}:latest" not in models:
+        return (f"model {CONFIG.LLM_MODEL!r} is not pulled (have: "
+                f"{', '.join(models) or 'none'}) — run: ollama pull {CONFIG.LLM_MODEL}")
+    return ""
+
+
 def _parse_json_object(text: str):
     if not text:
         return None
@@ -766,6 +799,11 @@ def main():
     log.info("LLM: %s %s via %s (ctx %d, %d concurrent, %ds timeout)",
              CONFIG.PROVIDER, CONFIG.LLM_MODEL, CONFIG.LLM_BASE_URL,
              CONFIG.LLM_NUM_CTX, CONFIG.LLM_CONCURRENCY, CONFIG.LLM_TIMEOUT)
+    if CONFIG.PROVIDER == "ollama":
+        problem = preflight_ollama()
+        if problem:
+            log.error("ollama: %s", problem)
+            sys.exit(3)
 
     news = asyncio.run(run(_sources()))
 
