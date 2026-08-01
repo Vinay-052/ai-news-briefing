@@ -43,19 +43,20 @@ async def _with_llm(coro_factory):
 
     async with _httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
         async def llm(prompt: str, max_tokens: int = 2048) -> str:
-            return await llm_call(client, prompt, CONFIG.EXTRACT_TIMEOUT, max_tokens=max_tokens)
+            return await llm_call(client, prompt, max_tokens=max_tokens)
         return await coro_factory(llm)
 
 
 def _require_llm() -> bool:
-    if not (CONFIG.LLM_BASE_URL and CONFIG.LLM_API_KEY and CONFIG.LLM_MODEL):
+    if not (CONFIG.LLM_BASE_URL and CONFIG.LLM_MODEL) or (
+            CONFIG.PROVIDER == "openai" and not CONFIG.LLM_API_KEY):
         print("!! LLM not configured. Run:  ./configure.py --llm")
         return False
     return True
 
 
 def _cv_path() -> Path:
-    p = Path(CONFIG.CV_PATH) if CONFIG.CV_PATH else (HERE / "Vinay_Balraj_AI_Developer_CV.pdf")
+    p = Path(CONFIG.CV_PATH) if CONFIG.CV_PATH else (HERE / "cv.pdf")
     return p if p.is_absolute() else (HERE / p)
 
 

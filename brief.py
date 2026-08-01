@@ -237,34 +237,88 @@ def _omit_temperature(model: str) -> bool:
     return bool(mm and (int(mm.group(1)), int(mm.group(2))) >= (4, 7))
 
 
-async def llm_call(client: httpx.AsyncClient, prompt: str, timeout: int,
-                   max_tokens: int = 2048) -> str:
-    """POST to an OpenAI-compatible endpoint, retrying on rate limits / 5xx.
+# One GPU serves one request at a time, so LLM calls get their own gate,
+# independent of the (network-bound) article-fetch concurrency. Keyed by loop:
+# brief.py --weekly runs two asyncio.run() loops in one process.
+_LLM_SEMS: dict = {}
+# Set when the server rejects the `think` field (models without thinking).
+_THINK_UNSUPPORTED = False
 
-    Gateways throttle when ~100+ articles are summarized in one run, so a bare
-    call loses those articles. Honor Retry-After when present, else exponential
-    backoff with jitter. `max_tokens` matters for long structured replies (the
-    skills-gap JSON needs far more room than a single article summary).
-    """
-    url = CONFIG.LLM_BASE_URL.rstrip("/") + "/chat/completions"
+
+def _llm_sem() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _LLM_SEMS.get(loop)
+    if sem is None:
+        sem = _LLM_SEMS[loop] = asyncio.Semaphore(max(1, CONFIG.LLM_CONCURRENCY))
+    return sem
+
+
+def _ollama_request(prompt: str, max_tokens: int) -> tuple:
+    # Native /api/chat rather than Ollama's /v1 shim: only the native API takes
+    # num_ctx (the shim defaults to a small window and truncates articles) and
+    # `think`.
+    base = re.sub(r"/v1/?$", "", CONFIG.LLM_BASE_URL.rstrip("/"))
+    payload = {"model": CONFIG.LLM_MODEL, "stream": False,
+               "keep_alive": CONFIG.LLM_KEEP_ALIVE,
+               "options": {"num_ctx": CONFIG.LLM_NUM_CTX,
+                           "num_predict": max_tokens,
+                           "temperature": 0.2},
+               "messages": [{"role": "user", "content": prompt}]}
+    if not _THINK_UNSUPPORTED:
+        payload["think"] = CONFIG.LLM_THINK
+    return base + "/api/chat", payload, {"Content-Type": "application/json"}
+
+
+def _openai_request(prompt: str, max_tokens: int) -> tuple:
     payload = {"model": CONFIG.LLM_MODEL, "max_tokens": max_tokens,
                "messages": [{"role": "user", "content": prompt}]}
     if not _omit_temperature(CONFIG.LLM_MODEL):
         payload["temperature"] = 0.2
-    headers = {"Authorization": f"Bearer {CONFIG.LLM_API_KEY}",
-               "Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
+    if CONFIG.LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {CONFIG.LLM_API_KEY}"
+    return CONFIG.LLM_BASE_URL.rstrip("/") + "/chat/completions", payload, headers
+
+
+async def llm_call(client: httpx.AsyncClient, prompt: str, timeout: int = 0,
+                   max_tokens: int = 2048) -> str:
+    """Ask the configured model, retrying on rate limits / 5xx / timeouts.
+
+    Speaks Ollama's native /api/chat or an OpenAI-compatible
+    /chat/completions, per CONFIG.PROVIDER. Gateways throttle when ~100+
+    articles are summarized in one run and a local model occasionally stalls,
+    so a bare call loses those articles. Honor Retry-After when present, else
+    exponential backoff with jitter. `max_tokens` matters for long structured
+    replies (the skills-gap JSON needs far more room than one summary).
+    """
+    global _THINK_UNSUPPORTED
+    ollama = CONFIG.PROVIDER == "ollama"
+    timeout = timeout or CONFIG.LLM_TIMEOUT
     last_err = ""
     for attempt in range(CONFIG.LLM_MAX_RETRIES + 1):
+        url, payload, headers = (_ollama_request(prompt, max_tokens) if ollama
+                                 else _openai_request(prompt, max_tokens))
         try:
-            r = await client.post(url, json=payload, timeout=timeout, headers=headers)
+            async with _llm_sem():
+                r = await client.post(url, json=payload, timeout=timeout, headers=headers)
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
         else:
             if r.status_code == 200:
                 data = r.json()
+                if ollama:
+                    return ((data.get("message") or {}).get("content") or "").strip()
                 return (data["choices"][0]["message"]["content"] or "").strip()
             last_err = f"HTTP {r.status_code}"
+            # A model with no thinking mode rejects the field outright; drop it
+            # and retry immediately instead of burning the backoff budget.
+            if (ollama and r.status_code == 400 and not _THINK_UNSUPPORTED
+                    and "think" in r.text.lower()):
+                _THINK_UNSUPPORTED = True
+                log.debug("model %s has no thinking mode — dropping `think`", CONFIG.LLM_MODEL)
+                continue
             if r.status_code not in (408, 409, 425, 429, 500, 502, 503, 504):
+                log.debug("LLM %s: %s", last_err, r.text[:300])
                 r.raise_for_status()
             if attempt < CONFIG.LLM_MAX_RETRIES:
                 delay = None
@@ -482,7 +536,7 @@ async def _fetch_extract_summarize(client, entry, errors):
         audiences=", ".join(tax.AUDIENCES), status_tags=", ".join(tax.STATUS_TAGS),
         title=entry.get("title") or "(none)", source=entry.get("source") or "", url=url, content=content)
     try:
-        resp = await llm_call(client, prompt, CONFIG.EXTRACT_TIMEOUT)
+        resp = await llm_call(client, prompt)
     except Exception as e:
         errors.append({"url": url, "status": "llm_error", "error": str(e)})
         return None
@@ -678,14 +732,14 @@ async def _skills_report(news: dict):
     if not articles:
         log.warning("skills: no news history yet — skipping")
         return None
-    cv = Path(CONFIG.CV_PATH) if CONFIG.CV_PATH else (HERE / "Vinay_Balraj_AI_Developer_CV.pdf")
+    cv = Path(CONFIG.CV_PATH) if CONFIG.CV_PATH else (HERE / "cv.pdf")
     if not cv.is_absolute():
         cv = HERE / cv
 
     limits = httpx.Limits(max_connections=4)
     async with httpx.AsyncClient(follow_redirects=True, limits=limits, timeout=30) as client:
         async def llm(prompt: str, max_tokens: int = 2048) -> str:
-            return await llm_call(client, prompt, CONFIG.EXTRACT_TIMEOUT, max_tokens=max_tokens)
+            return await llm_call(client, prompt, max_tokens=max_tokens)
         try:
             await sg.ensure_cv_skills(state, cv, llm, log=log.info)
         except (FileNotFoundError, ValueError) as e:
@@ -703,9 +757,15 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     dry = "--dry-run" in sys.argv
     weekly = "--weekly" in sys.argv
-    if not (CONFIG.LLM_BASE_URL and CONFIG.LLM_API_KEY and CONFIG.LLM_MODEL):
-        log.error("LLM_BASE_URL / LLM_API_KEY / LLM_MODEL not configured in .env")
+    if not (CONFIG.LLM_BASE_URL and CONFIG.LLM_MODEL):
+        log.error("LLM_BASE_URL / LLM_MODEL not configured in .env")
         sys.exit(2)
+    if CONFIG.PROVIDER == "openai" and not CONFIG.LLM_API_KEY:
+        log.error("LLM_API_KEY not configured in .env (required for provider=openai)")
+        sys.exit(2)
+    log.info("LLM: %s %s via %s (ctx %d, %d concurrent, %ds timeout)",
+             CONFIG.PROVIDER, CONFIG.LLM_MODEL, CONFIG.LLM_BASE_URL,
+             CONFIG.LLM_NUM_CTX, CONFIG.LLM_CONCURRENCY, CONFIG.LLM_TIMEOUT)
 
     news = asyncio.run(run(_sources()))
 

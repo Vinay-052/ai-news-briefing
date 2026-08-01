@@ -33,7 +33,41 @@ one-off without changing anything permanently.
 Several recipients: comma-separate them —
 `./configure.py --set MAIL_TO="a@x.com,b@y.com"`
 
-### Rotate the LLM API key
+### Move to a local model (Ollama) — no API key, no quota
+```bash
+ollama pull gemma4:26b                      # once; ~17 GB
+./configure.py --use-ollama gemma4:26b      # sets provider + URL + model, clears the key
+./configure.py --test-llm
+```
+`--use-ollama` with no model argument keeps your current `LLM_MODEL` if it's
+installed, else picks the first model the server reports. It also lists what's
+pulled, and refuses a model you haven't pulled instead of failing mid-run.
+
+An Ollama server on another machine works the same way:
+```bash
+./configure.py --set LLM_PROVIDER=ollama --set LLM_BASE_URL=http://gpu-box:11434 \
+               --set LLM_MODEL=gemma4:26b --test-llm
+```
+(That server needs `OLLAMA_HOST=0.0.0.0:11434` to accept remote calls.)
+
+### Tune a local model
+```bash
+./configure.py --set LLM_NUM_CTX=16384      # bigger window (more RAM per call)
+./configure.py --set LLM_TIMEOUT=1800       # very slow box / very long replies
+./configure.py --set LLM_CONCURRENCY=2      # only if the GPU has headroom for 2 contexts
+./configure.py --set LLM_KEEP_ALIVE=-1      # never unload the weights
+./configure.py --set LLM_THINK=true         # thinking models; slower, rarely better here
+```
+`LLM_NUM_CTX` must cover `MAX_CONTENT_CHARS`/4 tokens plus ~800 for the prompt —
+at the default 12 000 chars that's ~3 800, comfortably inside 8192. Raise the
+window *or* lower `MAX_CONTENT_CHARS`; if the window is too small Ollama
+truncates the article silently and the summaries get vague.
+
+A full run is ~90 article calls, one at a time. Ballpark at 26B/Q4 on a
+consumer GPU: 25-45 s each, so 40-70 minutes. To speed it up: a smaller model,
+`PER_FEED_LIMIT=5`, or `MAX_CONTENT_CHARS=8000` (prompt processing dominates).
+
+### Rotate the LLM API key (gateway backends)
 ```bash
 ./configure.py --set LLM_API_KEY=sk-newkey... --test-llm
 ```
@@ -41,17 +75,20 @@ Or `./configure.py --llm` to be prompted (the key is hidden as you type).
 
 ### Switch model, or move to a different provider/gateway
 ```bash
-# same gateway, different model
-./configure.py --set LLM_MODEL=claude-opus-5 --test-llm
+# same backend, different model
+./configure.py --set LLM_MODEL=gemma4:6b --test-llm
 
-# different provider entirely
-./configure.py --set LLM_BASE_URL=https://api.openai.com/v1 \
+# hosted gateway instead of the local model
+./configure.py --set LLM_PROVIDER=openai \
+               --set LLM_BASE_URL=https://api.openai.com/v1 \
                --set LLM_API_KEY=sk-... \
                --set LLM_MODEL=gpt-4o --test-llm
 ```
-Any **OpenAI-compatible** `/chat/completions` endpoint works — hosted gateways,
-OpenAI, or a local Ollama (`http://localhost:11434/v1`, any key value).
+With `LLM_PROVIDER=openai`, any **OpenAI-compatible** `/chat/completions`
+endpoint works — OpenAI, OpenRouter, vLLM, llama.cpp, a corporate gateway.
 `LLM_BASE_URL` should end in `/v1`; the script appends `/chat/completions`.
+With `LLM_PROVIDER=ollama` the base URL is the server root (no `/v1`) and the
+script uses the native `/api/chat`, which is the only way to set `num_ctx`.
 
 ### Change the email account it sends from
 ```bash
@@ -94,7 +131,7 @@ To permanently add a source to the preset, edit `AI_NEWS_SOURCES` in `sources.py
 ### PDF archive
 ```bash
 ./configure.py --set SAVE_PDF=false          # stop saving PDFs
-./configure.py --set PDF_DIR=/home/vinay/briefings   # keep them elsewhere
+./configure.py --set PDF_DIR=~/briefings     # keep them elsewhere
 ./configure.py --set ATTACH_PDF=true         # attach the PDF to the email too
 ```
 Files are named `AI_News_Briefing_<date>_<HHMM>.pdf`. They're gitignored, and
@@ -102,7 +139,7 @@ nothing prunes them — delete old ones yourself if they pile up.
 
 ### Weekly skills gap / your CV
 ```bash
-./configure.py --set CV_PATH=/home/vinay/docs/my_cv.pdf   # after moving/renaming it
+./configure.py --set CV_PATH=~/docs/my_cv.pdf   # default is cv.pdf in this folder
 ./skills.py refresh-cv                       # re-read it after an update
 ./configure.py --set SKILLS_WINDOW_DAYS=14   # analyse 14 days of news instead of 7
 ./configure.py --set MAX_SKILL_GAPS=5        # shorter list
@@ -136,16 +173,22 @@ The run already retries with backoff. If it's still noisy, slow it down:
 | `SMTP_SECURITY` | `ssl` | `ssl` \| `starttls` \| `plain` |
 | `SMTP_USER` | — | Usually the full email address |
 | `SMTP_PASS` | — | App password for Gmail |
-| `LLM_BASE_URL` | — | OpenAI-compatible base, ending `/v1` |
-| `LLM_API_KEY` | — | Sent as `Authorization: Bearer <key>` |
-| `LLM_MODEL` | — | Model id |
+| `LLM_PROVIDER` | `auto` | `ollama` \| `openai` \| `auto` (sniffs the URL) |
+| `LLM_BASE_URL` | `http://localhost:11434` | Ollama root, or OpenAI-compatible base ending `/v1` |
+| `LLM_API_KEY` | — | Sent as `Authorization: Bearer <key>`; unused for ollama |
+| `LLM_MODEL` | `gemma4:26b` | Model id / Ollama tag |
+| `LLM_NUM_CTX` | `8192` | Ollama context window (tokens) |
+| `LLM_THINK` | `false` | Ollama thinking mode |
+| `LLM_KEEP_ALIVE` | `30m` | How long Ollama keeps the weights loaded |
+| `LLM_TIMEOUT` | `900` ollama / `EXTRACT_TIMEOUT` | Per-call timeout (seconds) |
+| `LLM_CONCURRENCY` | `1` ollama / `CONCURRENCY` | Parallel model calls |
 | `SOURCES` | bundled preset | Comma-separated URLs; blank = preset |
 | `KEYWORDS` | none | Relevance filter; blank = keep everything |
 | `WINDOW_HOURS` | `24` | How far back to look |
 | `PER_FEED_LIMIT` | `10` | Max articles per source |
 | `DETAIL_LIMIT` | `20` | Full cards; remainder become a compact list |
-| `CONCURRENCY` | `3` | Parallel summaries; lower if rate-limited |
-| `EXTRACT_TIMEOUT` | `90` | Per-article LLM timeout (seconds) |
+| `CONCURRENCY` | `3` | Parallel article fetches; lower if rate-limited |
+| `EXTRACT_TIMEOUT` | `90` | Legacy LLM timeout fallback (see `LLM_TIMEOUT`) |
 | `MAX_CONTENT_CHARS` | `12000` | Article text sent to the model |
 | `LLM_MAX_RETRIES` | `4` | Retries on 429/5xx |
 | `LLM_BACKOFF_BASE` | `2` | Backoff seed (seconds) |
@@ -170,8 +213,8 @@ xdg-open last_briefing.html      #    inspect the result
 tail -30 brief.log               #    what happened
 ./run.sh                         # 5. real run: build + send
 ```
-A dry run takes a few minutes (~100 articles) and costs tokens; `--test-llm` is
-the cheap check.
+A dry run processes ~100 articles: minutes on a hosted gateway (and tokens),
+tens of minutes on a local model (and nothing). `--test-llm` is the cheap check.
 
 ---
 
@@ -181,9 +224,15 @@ the cheap check.
 |---|---|
 | `SyntaxError: set -euo pipefail` | You ran `python3 run.sh`. It's a bash script — use `./run.sh` or `bash run.sh` |
 | `ModuleNotFoundError: feedparser` | You used the system python — use `./run.sh` or `./venv/bin/python brief.py` |
-| `HTTP 401` on `--test-llm` | Bad `LLM_API_KEY` |
+| `HTTP 401` on `--test-llm` | Bad `LLM_API_KEY` (gateway backends) |
 | `HTTP 404` on `--test-llm` | `LLM_BASE_URL` missing `/v1`, or wrong `LLM_MODEL` |
-| `HTTP 429` | Rate limited — lower `CONCURRENCY`, raise `LLM_MAX_RETRIES` |
+| `HTTP 429` | Rate limited — lower `LLM_CONCURRENCY`, raise `LLM_MAX_RETRIES` |
+| `no answer from http://localhost:11434` | Ollama isn't running: `systemctl start ollama` (or `ollama serve`) |
+| `model 'x' is not pulled` | `ollama pull x` — `--test-llm` lists what's installed |
+| Local run times out | Raise `LLM_TIMEOUT`; first call also pays the model-load time |
+| Local summaries look vague/generic | `LLM_NUM_CTX` too small for `MAX_CONTENT_CHARS` — the article got truncated |
+| Ollama reloads the model constantly | Raise `LLM_KEEP_ALIVE` (`30m`, or `-1` for never) |
+| Run is very slow | Expected locally — smaller model, or lower `PER_FEED_LIMIT` / `MAX_CONTENT_CHARS` |
 | `temperature is deprecated` | Expected for Opus 4.7+; `brief.py` already omits it |
 | SMTP auth rejected | Gmail wants an App Password, not the account password |
 | No email but log looks fine | Check `MAIL_TO`; look in spam |
@@ -199,18 +248,23 @@ Logs: `brief.log` (appended every run). Last output: `last_briefing.html`.
 
 ---
 
-## Moving to another machine (e.g. Raspberry Pi)
+## Moving to another machine
 
 ```bash
-git clone http://<gitea-host>:3000/claude/ai-news-briefing.git
+git clone https://github.com/<you>/ai-news-briefing.git
 cd ai-news-briefing
 python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 scp you@oldbox:~/ai-news-briefing/.env .   # or: ./configure.py to enter fresh
 chmod 600 .env
-sudo timedatectl set-timezone Asia/Kolkata
+sudo timedatectl set-timezone <Area/City>  # cron uses local time
 ./configure.py --schedule 10:00
 ./configure.py --test-llm && ./configure.py --test-email
 ```
+Point it at a model the new box can actually reach: `ollama pull <model>` there,
+or `--set LLM_BASE_URL=http://gpu-box:11434` to borrow another machine's Ollama,
+or `LLM_PROVIDER=openai` with a gateway if it can't serve a model at all (a
+Raspberry Pi, for instance).
+
 Never copy `venv/` between machines — rebuild it so you get the right
 architecture wheels. On a very small box you can drop `trafilatura` from
 `requirements.txt`; extraction falls back to BeautifulSoup automatically.

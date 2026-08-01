@@ -8,7 +8,9 @@ Stdlib only — runs with any python3, venv or not.
     ./configure.py --email              # just the email section
     ./configure.py --llm                # just the LLM section
     ./configure.py --briefing           # just the briefing options
-    ./configure.py --set MAIL_TO=a@b.c --set LLM_MODEL=claude-opus-5
+    ./configure.py --set MAIL_TO=a@b.c --set LLM_MODEL=gemma4:26b
+    ./configure.py --use-ollama         # switch to a local Ollama server
+    ./configure.py --use-ollama gemma4:26b --test-llm
     ./configure.py --test-llm           # verify the model endpoint answers
     ./configure.py --test-email         # send a small test message
     ./configure.py --schedule 10:00     # change the daily cron time
@@ -49,17 +51,23 @@ FIELDS = {
     "SMTP_USER": ("SMTP username", "email", "Usually your full email address"),
     "SMTP_PASS": ("SMTP password", "email", "Gmail: a 16-char App Password, not your login password"),
     # --- llm ---
-    "LLM_BASE_URL": ("LLM base URL", "llm", "OpenAI-compatible base, ending in /v1"),
-    "LLM_API_KEY": ("LLM API key", "llm", "Sent as: Authorization: Bearer <key>"),
-    "LLM_MODEL": ("LLM model", "llm", "e.g. claude-opus-4-7, gpt-4o, llama3.1"),
+    "LLM_PROVIDER": ("LLM provider", "llm", "ollama | openai | auto (sniff the URL)"),
+    "LLM_BASE_URL": ("LLM base URL", "llm", "ollama: http://localhost:11434 — openai: base ending in /v1"),
+    "LLM_API_KEY": ("LLM API key", "llm", "Bearer token; leave empty for local ollama"),
+    "LLM_MODEL": ("LLM model", "llm", "ollama: e.g. gemma4:26b — openai: e.g. gpt-4o"),
+    "LLM_NUM_CTX": ("Context window (ollama)", "llm", "Tokens; must fit MAX_CONTENT_CHARS/4 + prompt"),
+    "LLM_THINK": ("Thinking mode (ollama)", "llm", "true/false — off is faster and enough for JSON"),
+    "LLM_KEEP_ALIVE": ("Keep model loaded (ollama)", "llm", "e.g. 30m — avoids reloading weights each call"),
+    "LLM_TIMEOUT": ("LLM timeout (s)", "llm", "Per-call; blank = 900 for ollama, EXTRACT_TIMEOUT otherwise"),
+    "LLM_CONCURRENCY": ("LLM concurrency", "llm", "Parallel model calls; blank = 1 for ollama"),
     # --- briefing ---
     "SOURCES": ("Sources", "briefing", "Comma-separated URLs; blank = bundled 25-source preset"),
     "KEYWORDS": ("Keyword filter", "briefing", "Comma-separated; blank = keep everything"),
     "WINDOW_HOURS": ("Time window (hours)", "briefing", "How far back to look, e.g. 24"),
     "PER_FEED_LIMIT": ("Per-feed limit", "briefing", "Max articles taken from each source"),
     "DETAIL_LIMIT": ("Full detail cards", "briefing", "Rest render as a compact list"),
-    "CONCURRENCY": ("Concurrency", "briefing", "Parallel article summaries; lower if rate-limited"),
-    "EXTRACT_TIMEOUT": ("LLM timeout (s)", "briefing", "Per-article LLM call timeout"),
+    "CONCURRENCY": ("Concurrency", "briefing", "Parallel article fetches; lower if rate-limited"),
+    "EXTRACT_TIMEOUT": ("Fetch timeout (s)", "briefing", "Legacy LLM timeout fallback; see LLM_TIMEOUT"),
     "MAX_CONTENT_CHARS": ("Max content chars", "briefing", "Article text sent to the model"),
     "LLM_MAX_RETRIES": ("LLM max retries", "briefing", "Retries on 429/5xx"),
     "LLM_BACKOFF_BASE": ("LLM backoff base (s)", "briefing", "Exponential backoff seed"),
@@ -83,6 +91,9 @@ SECTION_TITLES = {
 # Falls back to these (defined in config.py) when a key is absent from .env.
 CODE_DEFAULTS = {
     "SMTP_PORT": "465", "SMTP_SECURITY": "ssl",
+    "LLM_PROVIDER": "auto", "LLM_BASE_URL": "http://localhost:11434",
+    "LLM_MODEL": "gemma4:26b", "LLM_NUM_CTX": "8192", "LLM_THINK": "false",
+    "LLM_KEEP_ALIVE": "30m", "LLM_TIMEOUT": "900 (ollama)", "LLM_CONCURRENCY": "1 (ollama)",
     "WINDOW_HOURS": "24", "PER_FEED_LIMIT": "10", "DETAIL_LIMIT": "20",
     "CONCURRENCY": "3", "EXTRACT_TIMEOUT": "90", "MAX_CONTENT_CHARS": "12000",
     "LLM_MAX_RETRIES": "4", "LLM_BACKOFF_BASE": "2",
@@ -148,15 +159,25 @@ def validate(key: str, value: str) -> str | None:
                 return f"not a valid email address: {part}"
     if key == "SMTP_SECURITY" and v and v.lower() not in ("ssl", "starttls", "plain"):
         return "must be one of: ssl, starttls, plain"
-    if key in ("SAVE_PDF", "ATTACH_PDF") and v and v.lower() not in (
+    if key in ("SAVE_PDF", "ATTACH_PDF", "LLM_THINK") and v and v.lower() not in (
             "true", "false", "yes", "no", "1", "0", "on", "off"):
         return "must be true or false"
-    if key == "CV_PATH" and v and not Path(v if Path(v).is_absolute() else HERE / v).exists():
-        return f"file not found: {v}"
+    if key == "LLM_PROVIDER" and v and v.lower() not in ("ollama", "openai", "auto"):
+        return "must be one of: ollama, openai, auto"
+    if key == "LLM_KEEP_ALIVE" and v and not re.fullmatch(r"-?\d+[smh]?", v):
+        return "duration like 30m, 900s or -1 (forever)"
+    if key in ("CV_PATH", "PDF_DIR") and v:
+        vp = Path(v).expanduser()
+        target = vp if vp.is_absolute() else HERE / vp
+        if key == "CV_PATH" and not target.exists():
+            return f"file not found: {v}"
+        if key == "PDF_DIR" and not target.is_dir():
+            return f"not a directory: {v}"
     if key == "LLM_BASE_URL" and v and not v.startswith(("http://", "https://")):
         return "must start with http:// or https://"
     if key in ("SMTP_PORT", "WINDOW_HOURS", "PER_FEED_LIMIT", "DETAIL_LIMIT",
                "CONCURRENCY", "EXTRACT_TIMEOUT", "MAX_CONTENT_CHARS", "LLM_MAX_RETRIES",
+               "LLM_NUM_CTX", "LLM_TIMEOUT", "LLM_CONCURRENCY",
                "SKILLS_WINDOW_DAYS", "MAX_SKILL_GAPS", "HISTORY_KEEP_DAYS"):
         if v and not v.isdigit():
             return "must be a whole number"
@@ -267,25 +288,99 @@ def interactive(sections):
 
 
 # ------------------------------------------------------------------ tests
+def resolved_provider(env: dict) -> str:
+    p = (env.get("LLM_PROVIDER", "") or "auto").lower()
+    if p in ("ollama", "openai"):
+        return p
+    url = (env.get("LLM_BASE_URL", "") or "http://localhost:11434").lower()
+    return "ollama" if ("11434" in url or "ollama" in url) else "openai"
+
+
+def ollama_models(base: str) -> list:
+    """Names of the models the server has pulled ([] when unreachable)."""
+    try:
+        with urllib.request.urlopen(base + "/api/tags", timeout=10) as r:
+            data = json.loads(r.read().decode())
+        return [m.get("name", "") for m in data.get("models") or []]
+    except Exception:
+        return []
+
+
+def use_ollama(model: str = "") -> int:
+    """Point the briefing at a local Ollama server in one step."""
+    env = read_env()
+    base = re.sub(r"/v1/?$", "", (env.get("LLM_BASE_URL", "") or "").rstrip("/"))
+    if not base or "11434" not in base:
+        base = "http://localhost:11434"
+    installed = ollama_models(base)
+    if not installed:
+        print(f"!! no answer from {base} — start Ollama first (systemctl start ollama).")
+        return 1
+    if not model:
+        model = env.get("LLM_MODEL", "")
+        if model not in installed and f"{model}:latest" not in installed:
+            model = installed[0]
+    elif model not in installed and f"{model}:latest" not in installed:
+        print(f"!! model {model!r} is not pulled. Installed: {', '.join(installed)}")
+        print(f"   → ollama pull {model}")
+        return 1
+    # No API key for a local server; the old gateway key would just sit in .env.
+    write_env({"LLM_PROVIDER": "ollama", "LLM_BASE_URL": base,
+               "LLM_MODEL": model, "LLM_API_KEY": ""})
+    print(f"Switched to Ollama: {base}  model={model}")
+    print(f"  installed: {', '.join(installed)}")
+    print("Verify with:  ./configure.py --test-llm")
+    return 0
+
+
 def test_llm() -> int:
     env = read_env()
-    base = env.get("LLM_BASE_URL", "").rstrip("/")
+    provider = resolved_provider(env)
+    base = (env.get("LLM_BASE_URL", "") or
+            ("http://localhost:11434" if provider == "ollama" else "")).rstrip("/")
     key = env.get("LLM_API_KEY", "")
-    model = env.get("LLM_MODEL", "")
-    if not (base and key and model):
-        print("!! LLM_BASE_URL / LLM_API_KEY / LLM_MODEL must all be set.")
+    model = env.get("LLM_MODEL", "") or ("gemma4:26b" if provider == "ollama" else "")
+    if not (base and model):
+        print("!! LLM_BASE_URL and LLM_MODEL must be set.")
         return 2
-    url = base + "/chat/completions"
-    body = json.dumps({"model": model, "max_tokens": 8,
-                       "messages": [{"role": "user", "content": "Reply with just: OK"}]}).encode()
-    req = urllib.request.Request(url, data=body, headers={
-        "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
-    print(f"POST {url}\n  model: {model}")
+    if provider == "openai" and not key:
+        print("!! LLM_API_KEY must be set for provider=openai.")
+        return 2
+
+    headers = {"Content-Type": "application/json"}
+    if provider == "ollama":
+        base = re.sub(r"/v1/?$", "", base)
+        installed = ollama_models(base)
+        if not installed:
+            print(f"  !! no answer from {base} — is Ollama running?")
+            print("     → systemctl status ollama   (or: ollama serve)")
+            return 1
+        if model not in installed and f"{model}:latest" not in installed:
+            print(f"  !! model {model!r} is not pulled. Installed: {', '.join(installed) or '(none)'}")
+            print(f"     → ollama pull {model}")
+            return 1
+        url = base + "/api/chat"
+        body = json.dumps({"model": model, "stream": False, "think": False,
+                           "keep_alive": env.get("LLM_KEEP_ALIVE", "30m") or "30m",
+                           "options": {"num_predict": 8,
+                                       "num_ctx": int(env.get("LLM_NUM_CTX", "8192") or 8192)},
+                           "messages": [{"role": "user", "content": "Reply with just: OK"}]}).encode()
+    else:
+        url = base + "/chat/completions"
+        headers["Authorization"] = f"Bearer {key}"
+        body = json.dumps({"model": model, "max_tokens": 8,
+                           "messages": [{"role": "user", "content": "Reply with just: OK"}]}).encode()
+
+    print(f"POST {url}\n  provider: {provider}\n  model: {model}")
+    if provider == "ollama":
+        print("  (first call loads the weights — this can take a minute)")
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(
+                urllib.request.Request(url, data=body, headers=headers), timeout=300) as r:
             data = json.loads(r.read().decode())
-        reply = (data["choices"][0]["message"]["content"] or "").strip()
-        print(f"  OK — model replied: {reply[:60]!r}")
+        reply = ((data.get("message") or {}).get("content") if provider == "ollama"
+                 else data["choices"][0]["message"]["content"]) or ""
+        print(f"  OK — model replied: {reply.strip()[:60]!r}")
         return 0
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")[:300]
@@ -293,7 +388,8 @@ def test_llm() -> int:
         if e.code == 401:
             print("     → check LLM_API_KEY")
         elif e.code == 404:
-            print("     → check LLM_BASE_URL (should end in /v1) and LLM_MODEL")
+            print("     → check LLM_BASE_URL"
+                  + ("" if provider == "ollama" else " (should end in /v1)") + " and LLM_MODEL")
         elif e.code == 429:
             print("     → rate limited; the briefing retries automatically")
         return 1
@@ -420,6 +516,8 @@ def main() -> int:
     p.add_argument("--output", action="store_true", help="configure PDF + skills options only")
     p.add_argument("--set", action="append", metavar="KEY=VALUE", default=[],
                    help="set a value non-interactively (repeatable)")
+    p.add_argument("--use-ollama", nargs="?", const="", metavar="MODEL",
+                   help="switch to a local Ollama server (default model: the first installed)")
     p.add_argument("--test-llm", action="store_true", help="check the model endpoint answers")
     p.add_argument("--test-email", action="store_true", help="send a small test message")
     p.add_argument("--schedule", metavar="HH:MM|off", help="set or remove the daily cron run")
@@ -432,6 +530,9 @@ def main() -> int:
         return 0
     if a.schedule:
         return set_schedule(a.schedule, a.weekly_day)
+    if a.use_ollama is not None:
+        rc = use_ollama(a.use_ollama)
+        return rc or (test_llm() if a.test_llm else 0)
     if a.test_llm and not a.set:
         return test_llm()
     if a.test_email and not a.set:
