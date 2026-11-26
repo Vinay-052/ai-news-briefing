@@ -9,14 +9,14 @@ Requires Python 3.9+ on macOS or Linux.
 ```bash
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
-./venv/bin/python webapp.py
+./run.sh
 ```
 
 Open <http://127.0.0.1:8765>. All app settings are in the dashboard. The server listens on loopback. For phone access, use an authenticated HTTPS reverse proxy on your private network that forwards to `127.0.0.1:8765` with `Host: 127.0.0.1:8765`. The dashboard assumes any client reaching it through the proxy has already authenticated.
 
 1. Open **Settings** and enter your provider and model. Add SMTP details if you want email delivery.
 2. Open **Events**. Edit the existing AI event or create a new event from AI News, Politics, Latest Trends, or Custom.
-3. Set the topic, source URLs, lookback, days, time, time zone, and delivery preference. Enable the schedule when ready.
+3. Paste your own feed or publisher URLs into **News source URLs**, one per line. Use **Edit sources** on any event to add or replace URLs later. Set the lookback, days, time, time zone, and delivery preference, then enable the schedule when ready.
 4. Use **Run now** to generate an edition immediately. Follow its progress in **Recent activity** and open the edition from **Archive**. The email and web editions both link to the original reporting and available related sources.
 
 The politics and trends presets contain editable starter feeds. Add sources that fit your geography and interests. The AI event uses the bundled AI feeds when its source field is blank.
@@ -38,16 +38,16 @@ For available models and API details, see the [OpenAI Responses API](https://dev
 The dashboard's server runs the scheduler even when the browser is closed. You can also run a worker with no HTTP listener, or trigger one scheduler pass periodically from an existing system scheduler.
 
 ```bash
-./venv/bin/python webapp.py worker
-./venv/bin/python webapp.py tick
+./run.sh worker
+./run.sh tick
 ```
 
 Each enabled event can run once per scheduled local date. The worker catches up a due slot within 24 hours of its scheduled time. Enabling an event or changing its days, time, or time zone starts the new schedule from the time of that change. The workers share a lock so dashboard, cron, and CLI runs use one pipeline at a time. If the worker exits mid-run, the archive marks the interrupted run as failed on restart. You can rerun it from the event.
 
-Existing headless commands still work and use dashboard settings.
+Headless commands use dashboard settings. Update any no-argument cron entries from earlier releases to use `./run.sh headless`; a bare `./run.sh` now starts the dashboard. Existing calls with `--dry-run`, `--weekly`, or `--event` keep their headless behavior.
 
 ```bash
-./run.sh                          # run the original AI event and use its delivery preference
+./run.sh headless                 # run the original AI event using its delivery preference
 ./run.sh --dry-run                # archive and write last_briefing.html, skip email
 ./run.sh --weekly                 # include the CV skills gap
 ./run.sh --event 2                # run an event by ID (see dashboard API at /api/dashboard)

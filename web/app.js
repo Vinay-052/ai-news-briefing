@@ -84,8 +84,16 @@ function renderEvents() {
     title.append(element("h3", "", event.name), element("span", "pill " + scheduled.toLowerCase(), scheduled));
     const days = event.days.length === 7 ? "Daily" : event.days.map(day => dayNames[day]).join(", ");
     const schedule = event.enabled ? [days, event.time, event.timezone].join(" · ") : "Run on demand";
+    const sourceCount = event.sources.split(/[,\n]/).filter(url => url.trim()).length;
+    const sourceSummary = sourceCount ? sourceCount + (sourceCount === 1 ? " source URL" : " source URLs")
+      : "Bundled AI feeds";
+    const sources = button("Edit sources", "source-link", () => openEditor(event, "sources"));
+    sources.setAttribute("aria-label", "Edit sources for " + event.name);
+    sources.dataset.focus = "sources-" + event.id;
+    const sourceRow = element("p", "meta source-row", sourceSummary);
+    sourceRow.append(sources);
     copy.append(title, element("p", "meta", schedule),
-      element("p", "meta", event.email ? "Web and email" : "Web archive"));
+      element("p", "meta", event.email ? "Web and email" : "Web archive"), sourceRow);
     const actions = element("div", "event-actions");
     const edit = button("Edit", "secondary", () => openEditor(event));
     const run = button("Run now", "primary", () => runEvent(event, run));
@@ -160,7 +168,7 @@ function fillEditor(data) {
   updateWeekly();
 }
 
-function openEditor(event) {
+function openEditor(event, focus = "name") {
   editing = event?.id ?? null;
   eventForm.reset();
   $("#event-error").textContent = "";
@@ -171,7 +179,7 @@ function openEditor(event) {
     time: "08:00", timezone: localZone || "UTC", days: [0, 1, 2, 3, 4, 5, 6],
     enabled: false, email: false, weekly: false});
   eventDialog.showModal();
-  if (event) eventForm.elements.name.focus();
+  if (event) eventForm.elements[focus].focus();
 }
 
 dayNames.forEach((day, index) => {

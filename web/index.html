@@ -23,7 +23,7 @@
           <div class="hero-copy">
             <p class="overline">NEWS BRIEFINGS</p>
             <h1>Your briefing desk.</h1>
-            <p>Schedule the news you follow and read each edition here or in your inbox.</p>
+            <p>Choose your news sources, schedule briefings, and read each edition here or in your inbox.</p>
             <button class="button highlight" id="new-event">New event <span aria-hidden="true">+</span></button>
           </div>
         </header>
@@ -86,13 +86,16 @@
     <form id="event-form">
       <header class="dialog-head"><h2 id="dialog-title">New event</h2><button type="button" class="icon close" aria-label="Close">×</button></header>
       <div class="dialog-body fields">
-        <label class="wide" id="preset-label">Start from a preset
-          <select id="preset"><option value="">Custom</option><option value="ai">AI news</option><option value="politics">Politics</option><option value="trends">Latest trends</option></select>
+        <label class="wide" id="preset-label">Source preset
+          <select id="preset"><option value="">Custom URLs</option><option value="ai">AI news</option><option value="politics">Politics</option><option value="trends">Latest trends</option></select>
         </label>
         <label>Name<input name="name" required maxlength="80" placeholder="Morning briefing"></label>
         <label>Topic<input name="topic" required maxlength="180" placeholder="e.g. Global climate policy"></label>
-        <label class="wide">Source URLs <textarea name="sources" rows="3" maxlength="12000" placeholder="One feed or publisher URL per line"></textarea>
-        <span class="hint">Leave blank to use the bundled feeds for the AI topic.</span></label>
+        <label class="wide" for="source-urls">News source URLs
+          <textarea id="source-urls" name="sources" rows="4" maxlength="12000" aria-describedby="source-help"
+                    placeholder="https://example.com/feed.xml"></textarea>
+          <span class="hint" id="source-help">Paste one RSS feed or publisher page URL per line. You can also edit or replace any preset URLs. Leave blank for the bundled AI feeds.</span>
+        </label>
         <label>Keywords<input name="keywords" maxlength="1000" placeholder="Optional, comma-separated"></label>
         <label>Lookback in hours<input name="window" type="number" min="0" max="720" required><span class="hint">Use 0 to include older articles.</span></label>
         <label>Time<input name="time" type="time" required></label>

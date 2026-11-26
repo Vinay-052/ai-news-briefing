@@ -139,3 +139,8 @@ footer { border-top: 1px solid var(--rule); margin-top: 42px; padding: 16px 0 24
   .masthead { align-items: flex-start; flex-direction: column; padding: 12px 0; gap: 8px; }
   nav { width: 100%; }
 }
+
+.source-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 8px; }
+.source-link { min-height: 38px; padding: 0 4px; border: 0; background: transparent; color: var(--green);
+  text-decoration: underline; text-underline-offset: 4px; }
+.source-link:hover { background: #edf3e9; box-shadow: none; }
