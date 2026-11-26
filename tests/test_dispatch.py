@@ -207,6 +207,11 @@ class DispatchTest(unittest.TestCase):
         with httpx.Client(base_url=base_url) as client:
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/app.js").status_code, 200)
+            for path, mime in (("/favicon.svg", "image/svg+xml; charset=utf-8"), ("/favicon.ico", "image/x-icon"),
+                               ("/apple-touch-icon.png", "image/png")):
+                icon = client.get(path)
+                self.assertEqual((icon.status_code, icon.headers["Content-Type"]), (200, mime))
+            self.assertIn('href="/favicon.svg"', client.get("/").text)
             self.assertEqual(client.get("/api/settings", headers={"Host": "another.example"}).status_code, 403)
             data = client.get("/api/presets").json()["trends"]
             self.assertEqual(client.post("/api/events", json=data).status_code, 403)

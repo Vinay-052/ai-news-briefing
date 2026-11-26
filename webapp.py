@@ -19,6 +19,9 @@ ASSETS = {
     "/": ("index.html", "text/html"),
     "/app.js": ("app.js", "text/javascript"),
     "/style.css": ("style.css", "text/css"),
+    "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+    "/favicon.ico": ("favicon.ico", "image/x-icon"),
+    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
 }
 log = logging.getLogger(__name__)
 
@@ -37,7 +40,9 @@ class Dashboard(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     def send(self, status, body, mime, policy=None):
         self.send_response(status)
-        self.send_header("Content-Type", mime + "; charset=utf-8")
+        # Binary assets (icons) must not claim a text charset.
+        text = mime.startswith("text/") or mime in ("application/json", "image/svg+xml")
+        self.send_header("Content-Type", mime + "; charset=utf-8" if text else mime)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
