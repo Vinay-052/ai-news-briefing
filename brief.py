@@ -51,7 +51,7 @@ except ImportError as _e:  # wrong interpreter, or venv not built yet
 import taxonomy as tax
 from sources import best_feed, known_strategy, FEED_SUFFIXES, preset_source_set
 from render import render_news_html
-from config import CONFIG
+from config import CONFIG, key_required
 
 log = logging.getLogger("news-brief")
 HERE = Path(__file__).resolve().parent
@@ -892,11 +892,61 @@ async def _skills_report(news: dict):
 def check_configuration(email=False):
     if not (CONFIG.LLM_BASE_URL and CONFIG.LLM_MODEL):
         raise ValueError("Set the model and endpoint in Settings.")
-    if (CONFIG.PROVIDER in ("chatgpt", "opencode", "anthropic") or CONFIG.OLLAMA_CLOUD
-            or CONFIG.PROVIDER == "openai" and CONFIG.REQUIRE_API_KEY) and not CONFIG.LLM_API_KEY:
+    if key_required(CONFIG) and not CONFIG.LLM_API_KEY:
         raise ValueError("Set the provider API key in Settings.")
     if email and not (CONFIG.SMTP_HOST and CONFIG.MAIL_FROM and CONFIG.MAIL_TO):
         raise ValueError("Set the SMTP host, sender, and recipients in Settings.")
+
+
+# OpenAI's /models also lists embedding, speech, image and moderation models,
+# none of which can write a briefing.
+_NON_CHAT = re.compile(r"embed|tts|whisper|dall-e|davinci|babbage|moderation|transcribe|"
+                       r"image|audio|realtime|search|computer-use|sora", re.I)
+
+
+def list_models() -> list:
+    """Model IDs the active provider offers, for the dashboard's model picker."""
+    base = CONFIG.LLM_BASE_URL.rstrip("/")
+    key = CONFIG.LLM_API_KEY
+    if CONFIG.PROVIDER == "ollama":
+        url = re.sub(r"/v1$", "", base) + "/api/tags"
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+    elif CONFIG.PROVIDER == "anthropic":
+        url = base + "/models?limit=1000"
+        headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
+    else:
+        url = base + "/models"
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+    try:
+        r = httpx.get(url, headers=headers, timeout=20, follow_redirects=False)
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Could not reach {base} ({type(exc).__name__}).") from None
+    if r.status_code in (401, 403):
+        raise RuntimeError("The provider rejected the API key. Paste a valid key, then load models again.")
+    if r.status_code == 404:
+        raise RuntimeError("This endpoint has no model list. Type the model ID instead.")
+    if r.status_code != 200:
+        raise RuntimeError(f"The provider's model list returned HTTP {r.status_code}.")
+    try:
+        data = r.json()
+    except ValueError:
+        raise RuntimeError("The provider's model list was not JSON. Check the API base URL.") from None
+    models = []
+    if CONFIG.PROVIDER == "ollama":
+        for item in data.get("models") or []:
+            if item.get("name"):
+                models.append({"id": item["name"], "label": item["name"]})
+    else:
+        for item in data.get("data") or []:
+            model_id = item.get("id")
+            if not model_id or item.get("type") not in (None, "chat", "model"):
+                continue
+            if CONFIG.PROVIDER == "chatgpt" and _NON_CHAT.search(model_id):
+                continue
+            label = item.get("display_name") or item.get("name") or model_id
+            models.append({"id": model_id, "label": label, "description": (item.get("description") or "")[:160]})
+    models.sort(key=lambda m: m["id"])
+    return models
 
 
 def test_connection() -> str:

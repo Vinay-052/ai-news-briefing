@@ -387,3 +387,32 @@ dialog .form-error, .dialog-result { margin: 0 20px 12px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after, ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Model picker: free-text input with a provider-supplied suggestion list */
+.model-row { display: flex; gap: 8px; align-items: stretch; }
+.model-row input { flex: 1; }
+.model-row .button { flex: none; min-height: 44px; }
+.model-status.ok { color: var(--ok); }
+.model-status.bad { color: var(--error); }
+.model-status.loading::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; vertical-align: -1px; animation: spin .7s linear infinite; }
+label .req { color: var(--error); margin-left: 3px; }
+
+/* Event source list: what you see is exactly what the briefing fetches */
+.source-editor legend { display: flex; gap: 10px; align-items: baseline; }
+.source-editor > .hint { margin: 4px 0 10px; }
+.source-list { list-style: none; margin: 0 0 10px; padding: 0; max-height: 264px; overflow-y: auto; border: 1px solid var(--rule); border-radius: 11px; background: var(--surface-2); }
+.source-list:empty { display: none; }
+.source-list li { display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 12px; border-bottom: 1px solid var(--rule); animation: rise .3s var(--ease) both; }
+.source-list li:last-child { border-bottom: 0; }
+.source-list li.removing { animation: source-out .22s var(--ease) both; }
+.source-list li.flash { background: var(--accent-soft); transition: background-color 1.2s var(--ease); }
+@keyframes source-out { to { opacity: 0; transform: translateX(16px); } }
+.source-list .src { flex: 1; min-width: 0; display: grid; }
+.source-list .src b { font-size: .86rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-list .src a { font: 500 .75rem var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: none; }
+.source-list .src a:hover { text-decoration: underline; }
+.source-list .icon { width: 32px; height: 32px; font-size: 1.15rem; color: var(--muted); flex: none; }
+.source-list .icon:hover { color: var(--error); background: var(--error-soft); }
+.source-add { display: flex; gap: 8px; }
+.source-add input { flex: 1; }
+.source-empty { padding: 12px; border: 1px dashed var(--rule-strong); border-radius: 11px; color: var(--muted); font-size: .88rem; margin: 0 0 10px; }

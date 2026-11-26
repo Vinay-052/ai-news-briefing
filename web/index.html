@@ -195,11 +195,17 @@
         </div>
         <label>Name<input name="name" required maxlength="80" placeholder="Morning briefing"></label>
         <label>Topic<input name="topic" required maxlength="180" placeholder="e.g. Global climate policy"><span class="hint">Use “ai” for the AI analyst format.</span></label>
-        <label class="wide" for="source-urls">News source URLs
-          <textarea id="source-urls" name="sources" rows="4" maxlength="12000" aria-describedby="source-help"
-                    placeholder="https://example.com/feed.xml"></textarea>
-          <span class="hint" id="source-help">One RSS feed or publisher page per line. Leave blank on the AI topic to use the bundled AI feeds.</span>
-        </label>
+        <fieldset class="wide source-editor" aria-describedby="source-help">
+          <legend>News sources <span class="meta" id="source-count"></span></legend>
+          <p class="hint" id="source-help">This briefing reads <strong>every URL in this list</strong>, and nothing else. Adding a URL keeps the ones already here. Use × to remove one.</p>
+          <ul class="source-list" id="source-list" aria-label="Source URLs"></ul>
+          <div class="source-add">
+            <input id="source-input" type="url" inputmode="url" placeholder="Paste an RSS feed or news page URL" aria-label="New source URL">
+            <button type="button" class="button secondary" id="source-add">Add</button>
+          </div>
+          <p class="hint">Paste several URLs at once, one per line or separated by commas. <button type="button" class="linkish" id="source-restore" hidden>Add the starter AI sources back</button></p>
+          <textarea name="sources" id="source-urls" hidden></textarea>
+        </fieldset>
         <label>AI provider<select name="provider" id="event-provider"></select></label>
         <label>Keywords<input name="keywords" maxlength="1000" placeholder="Optional, comma-separated"></label>
         <label>Lookback in hours<input name="window" type="number" min="0" max="720" required><span class="hint">Use 0 to include older articles.</span></label>
@@ -226,9 +232,14 @@
       <div class="dialog-body fields">
         <label class="wide">Display name<input name="name" required maxlength="60" placeholder="e.g. ChatGPT for politics"></label>
         <label>Provider<select name="LLM_PROVIDER" id="provider-type"></select></label>
-        <label>Model ID<input name="LLM_MODEL" required maxlength="200"></label>
-        <label class="wide">API base URL<input name="LLM_BASE_URL" type="url" required></label>
+        <label>API base URL<input name="LLM_BASE_URL" type="url" required></label>
         <label class="wide">API key<input name="LLM_API_KEY" type="password" autocomplete="new-password"><span class="hint" id="provider-key-hint"></span></label>
+        <label class="wide">Model ID
+          <span class="model-row"><input name="LLM_MODEL" required maxlength="200" list="provider-models" autocomplete="off" placeholder="Pick from the list or type an ID">
+          <button type="button" class="button secondary small" id="provider-load-models">Load models</button></span>
+          <span class="hint model-status" id="provider-model-status" aria-live="polite"></span>
+          <datalist id="provider-models"></datalist>
+        </label>
         <label class="check switch wide" id="provider-require"><input name="REQUIRE_API_KEY" type="checkbox" checked><span></span> Require a key (turn off for a trusted keyless gateway)</label>
         <p class="meta wide" id="provider-type-help"></p>
       </div>

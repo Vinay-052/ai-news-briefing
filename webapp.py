@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from briefing_store import DAYS, PRESETS, Store, drain, local_zone
+from sources import AI_NEWS_SOURCES
 
 WEB = Path(__file__).resolve().parent / "web"
 ASSETS = {
@@ -113,9 +114,12 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/settings":
             self.json(store.public_settings())
         elif self.path == "/api/presets":
-            self.json({key: dict(value, days=DAYS, timezone=local_zone(), enabled=False,
+            presets = {key: dict(value, days=DAYS, timezone=local_zone(), enabled=False,
                                  email=False, weekly=False, keywords="", window=24)
-                       for key, value in PRESETS.items()})
+                       for key, value in PRESETS.items()}
+            # Friendly names for the starter URLs, shown beside them in the source editor.
+            presets["labels"] = {source["url"]: source["name"] for source in AI_NEWS_SOURCES}
+            self.json(presets)
         elif match := re.fullmatch(r"/reports/(\d+)", self.path):
             html = store.report(int(match[1])).replace("<head>", '<head><base target="_blank">', 1)
             self.send(200, html.encode(), "text/html",
@@ -132,6 +136,8 @@ class Handler(BaseHTTPRequestHandler):
             self.json(store.save_settings(data))
         elif self.path == "/api/providers":
             self.json(store.save_provider(data), 201)
+        elif self.path == "/api/providers/models":
+            self.json(self.server.store.list_models(data))
         elif self.path == "/api/providers/test":
             provider = data.get("provider")
             if provider is not None and type(provider) is not int:

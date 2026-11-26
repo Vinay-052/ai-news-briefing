@@ -129,6 +129,12 @@ def _is_ollama_cloud(cfg) -> bool:
     return host.lower() == "ollama.com" or host.lower().endswith(".ollama.com")
 
 
+def key_required(cfg) -> bool:
+    """Hosted providers reject anonymous calls; only local/keyless gateways don't."""
+    return (cfg.PROVIDER in ("chatgpt", "opencode", "anthropic") or cfg.OLLAMA_CLOUD
+            or (cfg.PROVIDER == "openai" and cfg.REQUIRE_API_KEY))
+
+
 DEFAULTS = {key: value for key, value in vars(Config).items() if key.isupper() and key != "TOPIC"}
 
 

@@ -15,12 +15,16 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from config import DEFAULTS, STATE_DIR, make_config, using_config
+from sources import AI_NEWS_SOURCES
+from config import DEFAULTS, STATE_DIR, key_required, make_config, using_config
 
 log = logging.getLogger(__name__)
 SECRETS = {"LLM_API_KEY", "SMTP_PASS"}
 PRESETS = {
-    "ai": {"name": "AI News Briefing", "topic": "ai", "sources": "", "time": "08:00"},
+    # The AI starter list used to be a hidden fallback for a blank field; it is
+    # now written into the event so it can be seen and edited on the dashboard.
+    "ai": {"name": "AI News Briefing", "topic": "ai", "time": "08:00",
+           "sources": "\n".join(source["url"] for source in AI_NEWS_SOURCES)},
     "politics": {
         "name": "Politics Briefing", "topic": "politics and public policy", "time": "12:00",
         "sources": "https://feeds.bbci.co.uk/news/politics/rss.xml\nhttps://feeds.bbci.co.uk/news/world/rss.xml",
@@ -61,11 +65,14 @@ def validate_event(data):
     if not event["name"] or not event["topic"] or "\n" in event["name"] or "\r" in event["name"]:
         raise ValueError("Enter a name and topic.")
     event["topic"] = "ai" if event["topic"].lower() == "ai" else event["topic"]
-    sources = [item.strip() for item in re.split(r"[,\n]", event["sources"]) if item.strip()]
-    if len(sources) > 50 or (not sources and event["topic"] != "ai"):
-        raise ValueError("Provide up to 50 sources. The AI topic can use the bundled feeds.")
+    sources = list(dict.fromkeys(item.strip() for item in re.split(r"[,\n]", event["sources"]) if item.strip()))
+    if not sources:
+        raise ValueError("Add at least one source URL.")
+    if len(sources) > 50:
+        raise ValueError("Use up to 50 source URLs per event.")
     for source in sources:
         validate_url(source, "Each source")
+    event["sources"] = "\n".join(sources)
     event["window"] = number(data.get("window"), "Lookback hours", 0, 720)
     event["time"] = data.get("time")
     if not isinstance(event["time"], str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", event["time"]):
@@ -94,6 +101,8 @@ def validate_event(data):
 
 
 PROVIDER_TYPES = ("ollama", "chatgpt", "anthropic", "opencode", "openai")
+PROVIDER_LABELS = {"ollama": "Ollama", "chatgpt": "OpenAI", "anthropic": "Anthropic", "opencode": "OpenCode Console",
+                   "openai": "This gateway", "auto": "This provider"}
 
 
 def validate_provider(data):
@@ -116,6 +125,15 @@ def validate_provider(data):
     if key is not None and (not isinstance(key, str) or len(key) > 4096 or any(c in key for c in "\r\n")):
         raise ValueError("Invalid API key.")
     return profile, key
+
+
+def redact(text, *secrets):
+    # Real keys are long; replacing a one- or two-character value would mangle
+    # the message without protecting anything.
+    for secret in secrets:
+        if secret and len(secret) >= 6:
+            text = text.replace(secret, "[redacted]")
+    return text
 
 
 def next_run(event, changed, now=None):
@@ -170,10 +188,17 @@ class Store:
                     id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL
                 );
             """)
+            # Events saved when a blank list meant "the bundled AI feeds" get that
+            # list written in, so the editor shows exactly what will be fetched.
+            for row in db.execute("SELECT id, data FROM events").fetchall():
+                data = json.loads(row["data"])
+                if not data.get("sources", "").strip():
+                    data["sources"] = PRESETS["ai"]["sources"]
+                    db.execute("UPDATE events SET data = ? WHERE id = ?", (json.dumps(data), row["id"]))
             # Archives created before the in-app reader have no structured articles.
             if "news" not in {col["name"] for col in db.execute("PRAGMA table_info(runs)")}:
                 db.execute("ALTER TABLE runs ADD COLUMN news TEXT")
-            initial = dict(PRESETS["ai"], sources=DEFAULTS["SOURCES_RAW"], days=DAYS,
+            initial = dict(PRESETS["ai"], sources=DEFAULTS["SOURCES_RAW"] or PRESETS["ai"]["sources"], days=DAYS,
                            timezone=local_zone(), enabled=False, email=bool(DEFAULTS["SMTP_HOST"]),
                            weekly=True, keywords=", ".join(DEFAULTS["KEYWORDS"]),
                            window=DEFAULTS["WINDOW_HOURS"])
@@ -270,6 +295,11 @@ class Store:
                 profile["LLM_API_KEY"] = ""
             else:
                 profile["LLM_API_KEY"] = key or old.get("LLM_API_KEY", "")
+            cfg = make_config({}, profile)
+            if key_required(cfg) and not profile["LLM_API_KEY"]:
+                raise ValueError(f"{PROVIDER_LABELS[profile['LLM_PROVIDER']]} needs an API key."
+                                 + (" The saved key was cleared because the provider or URL changed." if moved and old
+                                    .get("LLM_API_KEY") else ""))
             if provider_id is None:
                 provider_id = db.execute("INSERT INTO providers(data) VALUES (?)",
                                          (json.dumps(profile),)).lastrowid
@@ -298,6 +328,39 @@ class Store:
                                ("LLM_PROVIDER", "LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "REQUIRE_API_KEY")})
         return make_config(self.settings(), values)
 
+    def list_models(self, data):
+        """Ask a provider (possibly unsaved, from an open form) for its model IDs.
+
+        A blank key falls back to the stored key only while the provider and URL
+        are unchanged, the same rule saving uses, so a typed URL can't receive it.
+        """
+        source = data.get("source")
+        provider = data.get("LLM_PROVIDER")
+        base = data.get("LLM_BASE_URL")
+        key = data.get("LLM_API_KEY") or ""
+        if provider not in PROVIDER_TYPES + ("auto",) or not isinstance(base, str) or not isinstance(key, str):
+            raise ValueError("Choose a provider and API base URL first.")
+        validate_url(base, "Provider endpoint")
+        if not key:
+            if source == "default":
+                saved = self.settings()
+                stored = dict(DEFAULTS, **saved)
+            elif type(source) is int:
+                stored = self.provider(source)
+            else:
+                stored = {}
+            if stored.get("LLM_PROVIDER") == provider and stored.get("LLM_BASE_URL") == base:
+                key = stored.get("LLM_API_KEY") or ""
+        cfg = make_config(self.settings(), {"LLM_PROVIDER": provider, "LLM_BASE_URL": base, "LLM_API_KEY": key})
+        import brief
+
+        try:
+            with using_config(cfg):
+                models = brief.list_models()
+        except RuntimeError as exc:
+            raise ValueError(redact(str(exc), key)) from None
+        return {"models": models, "keyed": bool(key)}
+
     def test_provider(self, provider_id=None):
         import brief
 
@@ -307,10 +370,7 @@ class Store:
             with using_config(cfg):
                 reply = brief.test_connection()
         except Exception as exc:
-            message = str(exc) or type(exc).__name__
-            if cfg.LLM_API_KEY:
-                message = message.replace(cfg.LLM_API_KEY, "[redacted]")
-            return {"ok": False, "message": message[:400]}
+            return {"ok": False, "message": redact(str(exc) or type(exc).__name__, cfg.LLM_API_KEY)[:400]}
         return {"ok": True, "message": f"{cfg.LLM_MODEL} replied: {reply[:80] or '(empty reply)'}"}
 
     def readiness(self):
@@ -343,10 +403,7 @@ class Store:
                 brief.send_email(row["html"], f"{event['name']} — {stamp:%b %d, %Y}")
         except Exception as exc:
             log.exception("Emailing briefing %s failed", run_id)
-            message = f"Email failed: {exc}"
-            if cfg.SMTP_PASS:
-                message = message.replace(cfg.SMTP_PASS, "[redacted]")
-            raise ValueError(message[:300]) from None
+            raise ValueError(redact(f"Email failed: {exc}", cfg.SMTP_PASS)[:300]) from None
         with self.connect() as db:
             db.execute("UPDATE runs SET delivered = 1 WHERE id = ?", (run_id,))
         return {"sent": True, "to": cfg.MAIL_TO}
@@ -395,6 +452,12 @@ class Store:
             validate_url(cfg.LLM_BASE_URL, "Provider endpoint")
             if cfg.LLM_PROVIDER not in ("auto", "ollama", "openai", "chatgpt", "opencode", "anthropic"):
                 raise ValueError("Choose a valid AI provider.")
+            if not cfg.LLM_MODEL.strip():
+                raise ValueError("Enter a model ID for the default provider.")
+            if key_required(cfg) and not settings.get("LLM_API_KEY", cfg.LLM_API_KEY):
+                raise ValueError("The default provider needs an API key. Paste it in the API key field"
+                                 + (" (the saved key was cleared because the provider or URL changed)."
+                                    if previous.LLM_API_KEY else "."))
             if cfg.SMTP_SECURITY not in ("ssl", "starttls", "plain"):
                 raise ValueError("Choose a valid SMTP security mode.")
             if cfg.LLM_MAX_NUM_CTX < cfg.LLM_NUM_CTX:
@@ -568,9 +631,7 @@ def execute(store, row, *, dry=False):
         log.exception("Briefing %s failed", row["id"])
         error = str(exc) if isinstance(exc, ValueError) else "Run failed. Check the server log for details."
         if cfg is not None:
-            for secret in (cfg.LLM_API_KEY, cfg.SMTP_PASS):
-                if secret:
-                    error = error.replace(secret, "[redacted]")
+            error = redact(error, cfg.LLM_API_KEY, cfg.SMTP_PASS)
         status = "failed"
     else:
         status, error = "complete", None

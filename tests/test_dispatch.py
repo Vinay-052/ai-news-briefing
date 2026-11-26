@@ -75,7 +75,16 @@ class DispatchTest(unittest.TestCase):
         self.assertNotIn("example-secret", json.dumps(view))
         self.store.save_settings({"LLM_API_KEY": ""})
         self.assertEqual(self.store.settings()["LLM_API_KEY"], "example-secret")
-        view = self.store.save_settings({"LLM_PROVIDER": "chatgpt", "LLM_BASE_URL": "https://api.openai.com/v1"})
+        # Moving to a hosted provider never reuses the old key; without a new one the save is refused.
+        with self.assertRaisesRegex(ValueError, "needs an API key"):
+            self.store.save_settings({"LLM_PROVIDER": "chatgpt", "LLM_BASE_URL": "https://api.openai.com/v1"})
+        self.assertEqual(self.store.settings()["LLM_API_KEY"], "example-secret")
+        view = self.store.save_settings({"LLM_PROVIDER": "chatgpt", "LLM_BASE_URL": "https://api.openai.com/v1",
+                                         "LLM_API_KEY": "openai-secret"})
+        self.assertIs(view["LLM_API_KEY"], True)
+        self.assertEqual(self.store.settings()["LLM_API_KEY"], "openai-secret")
+        # A keyless endpoint change still drops the stored key.
+        view = self.store.save_settings({"LLM_PROVIDER": "ollama", "LLM_BASE_URL": "http://localhost:11500"})
         self.assertIs(view["LLM_API_KEY"], False)
         self.assertEqual(self.store.settings()["LLM_API_KEY"], "")
         self.assertEqual((self.directory / "settings.json").stat().st_mode & 0o777, 0o600)
@@ -253,9 +262,10 @@ class ProviderAndReaderTest(unittest.TestCase):
         self.store.save_provider(dict(profile, LLM_API_KEY="", LLM_MODEL="claude-other"), profile["id"])
         self.assertEqual(self.store.provider(profile["id"])["LLM_API_KEY"], "secret-one")
         # ...but never follows the profile to a different host.
-        self.store.save_provider(dict(profile, LLM_API_KEY="", LLM_BASE_URL="https://elsewhere.example/v1"),
-                                 profile["id"])
-        self.assertEqual(self.store.provider(profile["id"])["LLM_API_KEY"], "")
+        with self.assertRaisesRegex(ValueError, "needs an API key"):
+            self.store.save_provider(dict(profile, LLM_API_KEY="", LLM_BASE_URL="https://elsewhere.example/v1"),
+                                     profile["id"])
+        self.assertEqual(self.store.provider(profile["id"])["LLM_API_KEY"], "secret-one")
         self.store.save_provider(dict(profile, LLM_API_KEY="secret-two"), profile["id"])
         with self.assertRaises(ValueError):
             self.store.save_provider(dict(profile, LLM_PROVIDER="bogus"))
@@ -297,8 +307,9 @@ class ProviderAndReaderTest(unittest.TestCase):
         self.assertEqual(next_run(stored, 0, monday.replace(hour=10)),
                          datetime(2026, 11, 30, 9, 0, tzinfo=timezone.utc).timestamp())
         self.assertIsNone(next_run(dict(stored, enabled=False), 0, monday))
-        self.store.save_settings({"LLM_PROVIDER": "chatgpt", "LLM_BASE_URL": "https://model.example/v1",
-                                  "LLM_MODEL": "fixture"})
+        # Settings that predate key validation (e.g. imported from .env) still surface the banner.
+        (self.directory / "settings.json").write_text(json.dumps(
+            {"LLM_PROVIDER": "chatgpt", "LLM_BASE_URL": "https://model.example/v1", "LLM_MODEL": "fixture"}))
         self.assertIn("API key", self.store.readiness()["model"])
 
     def test_resend_archived_edition_by_email(self):
@@ -349,3 +360,151 @@ class ProviderAndReaderTest(unittest.TestCase):
             self.assertTrue(tested.json()["ok"])
             deleted = client.post(f"/api/providers/{provider_id}/delete", headers=headers, json={})
             self.assertEqual(deleted.json(), {"deleted": True})
+
+
+class ProviderValidationAndModelsTest(unittest.TestCase):
+    setUp = DispatchTest.setUp
+
+    def profile(self, **values):
+        data = {"name": "OpenCode", "LLM_PROVIDER": "opencode", "LLM_BASE_URL": "https://opencode.ai/inference/openai/v1",
+                "LLM_MODEL": "glm-5.3-flash", "LLM_API_KEY": "", "REQUIRE_API_KEY": True}
+        data.update(values)
+        return data
+
+    def test_keyed_providers_cannot_be_saved_without_a_key(self):
+        # The reported bug: OpenCode Console saved with no key.
+        for provider, url in (("opencode", "https://opencode.ai/inference/openai/v1"),
+                              ("chatgpt", "https://api.openai.com/v1"),
+                              ("anthropic", "https://api.anthropic.com/v1"),
+                              ("ollama", "https://ollama.com")):
+            with self.subTest(provider=provider):
+                with self.assertRaisesRegex(ValueError, "needs an API key"):
+                    self.store.save_provider(self.profile(LLM_PROVIDER=provider, LLM_BASE_URL=url))
+                with self.assertRaisesRegex(ValueError, "needs an API key"):
+                    self.store.save_settings({"LLM_PROVIDER": provider, "LLM_BASE_URL": url, "LLM_MODEL": "m"})
+        self.assertEqual(self.store.providers(), [])
+        # A compatible gateway may opt out, and a local Ollama never needs one.
+        self.store.save_provider(self.profile(LLM_PROVIDER="openai", LLM_BASE_URL="http://127.0.0.1:4000/v1",
+                                              REQUIRE_API_KEY=False))
+        with self.assertRaisesRegex(ValueError, "needs an API key"):
+            self.store.save_provider(self.profile(LLM_PROVIDER="openai", LLM_BASE_URL="http://127.0.0.1:4000/v1"))
+        self.store.save_provider(self.profile(LLM_PROVIDER="ollama", LLM_BASE_URL="http://localhost:11434"))
+        saved = self.store.save_provider(self.profile(LLM_API_KEY="oc-key"))
+        # Editing other fields with a blank key keeps the stored key, so it still saves.
+        self.store.save_provider(self.profile(name="Renamed"), saved["id"])
+        self.assertEqual(self.store.provider(saved["id"])["LLM_API_KEY"], "oc-key")
+        with self.assertRaisesRegex(ValueError, "Enter a model ID"):
+            self.store.save_settings({"LLM_MODEL": "  "})
+        with self.assertRaises(ValueError):
+            self.store.save_provider(self.profile(LLM_MODEL="", LLM_API_KEY="oc-key"))
+
+    def fake_models(self, routes):
+        seen = []
+
+        def get(url, headers=None, **kwargs):
+            seen.append((url, dict(headers or {})))
+            status, body = routes[url]
+            return httpx.Response(status, json=body, request=httpx.Request("GET", url))
+        return patch("brief.httpx.get", side_effect=get), seen
+
+    def test_model_lists_per_provider(self):
+        routes = {
+            "https://opencode.ai/inference/openai/v1/models": (200, {"data": [
+                {"id": "glm-5.3-flash", "name": "GLM 5.3 Flash", "type": "chat", "description": "Fast"},
+                {"id": "text-embed", "type": "embedding"}, {"id": "big-pickle", "type": "chat"}]}),
+            "https://api.openai.com/v1/models": (200, {"data": [
+                {"id": "gpt-5-mini"}, {"id": "text-embedding-3-small"}, {"id": "tts-1"}, {"id": "gpt-5"}]}),
+            "https://api.anthropic.com/v1/models?limit=1000": (200, {"data": [
+                {"id": "claude-haiku-5-5", "display_name": "Claude Haiku 5.5"}]}),
+            "http://localhost:11434/api/tags": (200, {"models": [{"name": "gemma4:26b"}]}),
+            "https://bad.example/v1/models": (401, {"error": "nope"}),
+        }
+        patcher, seen = self.fake_models(routes)
+        with patcher:
+            def ids(provider, url, key=""):
+                result = self.store.list_models({"LLM_PROVIDER": provider, "LLM_BASE_URL": url, "LLM_API_KEY": key})
+                return [m["id"] for m in result["models"]]
+            self.assertEqual(ids("opencode", "https://opencode.ai/inference/openai/v1"), ["big-pickle", "glm-5.3-flash"])
+            self.assertEqual(ids("chatgpt", "https://api.openai.com/v1", "sk"), ["gpt-5", "gpt-5-mini"])
+            self.assertEqual(ids("anthropic", "https://api.anthropic.com/v1", "ak"), ["claude-haiku-5-5"])
+            self.assertEqual(seen[-1][1]["x-api-key"], "ak")
+            self.assertEqual(ids("ollama", "http://localhost:11434"), ["gemma4:26b"])
+            with self.assertRaisesRegex(ValueError, "rejected the API key"):
+                ids("openai", "https://bad.example/v1", "k")
+            with self.assertRaises(ValueError):
+                self.store.list_models({"LLM_PROVIDER": "opencode", "LLM_BASE_URL": "file:///etc/passwd"})
+
+    def test_model_lookup_reuses_saved_key_only_for_the_same_endpoint(self):
+        saved = self.store.save_provider(self.profile(LLM_API_KEY="oc-key"))
+        routes = {"https://opencode.ai/inference/openai/v1/models": (200, {"data": []}),
+                  "https://attacker.example/v1/models": (200, {"data": []})}
+        patcher, seen = self.fake_models(routes)
+        with patcher:
+            self.assertTrue(self.store.list_models({"source": saved["id"], "LLM_PROVIDER": "opencode",
+                                                    "LLM_BASE_URL": "https://opencode.ai/inference/openai/v1"})["keyed"])
+            self.assertEqual(seen[-1][1]["Authorization"], "Bearer oc-key")
+            self.assertFalse(self.store.list_models({"source": saved["id"], "LLM_PROVIDER": "opencode",
+                                                     "LLM_BASE_URL": "https://attacker.example/v1"})["keyed"])
+            self.assertNotIn("Authorization", seen[-1][1])
+
+    def test_models_route(self):
+        try:
+            server = Dashboard(0, self.store)
+        except PermissionError:
+            self.skipTest("The test environment prevents binding to localhost")
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        patcher, _ = self.fake_models({"https://opencode.ai/inference/openai/v1/models": (200, {"data": [{"id": "m1"}]})})
+        with patcher, httpx.Client(base_url=f"http://127.0.0.1:{server.server_port}") as client:
+            response = client.post("/api/providers/models", headers={"X-Briefing-Request": "dashboard"},
+                                   json={"LLM_PROVIDER": "opencode", "LLM_BASE_URL": "https://opencode.ai/inference/openai/v1"})
+            self.assertEqual(response.json()["models"][0]["id"], "m1")
+            refused = client.post("/api/providers", headers={"X-Briefing-Request": "dashboard"}, json=self.profile())
+            self.assertEqual(refused.status_code, 400)
+            self.assertIn("needs an API key", refused.json()["error"])
+
+
+class SourceListTest(unittest.TestCase):
+    setUp = DispatchTest.setUp
+    event = DispatchTest.event
+
+    def test_ai_event_shows_its_starter_sources_and_blank_lists_are_rejected(self):
+        from sources import AI_NEWS_SOURCES
+        urls = [source["url"] for source in AI_NEWS_SOURCES]
+        # The initial AI event lists the starter URLs instead of a hidden blank fallback.
+        self.assertEqual(self.store.event(1)["sources"].split("\n"), urls)
+        self.assertEqual(PRESETS["ai"]["sources"].split("\n"), urls)
+        with self.assertRaisesRegex(ValueError, "at least one source"):
+            self.event("ai", sources="  ")
+        # Duplicates collapse, order is kept, and the stored list is exactly what is fetched.
+        saved = self.event("ai", sources="https://a.example/feed\nhttps://b.example/rss, https://a.example/feed")
+        self.assertEqual(saved["sources"], "https://a.example/feed\nhttps://b.example/rss")
+        with patch("brief.run") as run, patch("brief.preflight_ollama", return_value=""), \
+                patch("brief.check_configuration"):
+            run.return_value = {"articles": [], "errors": [], "input_sources": []}
+            with using_config(make_config({}, {"SOURCES_RAW": saved["sources"], "TOPIC": "news"})):
+                brief.build_briefing("Fixture")
+        self.assertEqual(run.call_args.args[0], ["https://a.example/feed", "https://b.example/rss"])
+
+    def test_blank_sources_from_earlier_releases_are_filled_in(self):
+        event = self.store.event(1)
+        event.pop("id")
+        with self.store.connect() as db:
+            db.execute("UPDATE events SET data = ? WHERE id = 1", (json.dumps(dict(event, sources="")),))
+        self.assertEqual(self.store.event(1)["sources"], "")
+        reopened = Store(self.directory)
+        self.assertEqual(reopened.event(1)["sources"], PRESETS["ai"]["sources"])
+
+    def test_presets_route_labels_starter_sources(self):
+        try:
+            server = Dashboard(0, self.store)
+        except PermissionError:
+            self.skipTest("The test environment prevents binding to localhost")
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with httpx.Client(base_url=f"http://127.0.0.1:{server.server_port}") as client:
+            presets = client.get("/api/presets").json()
+        self.assertEqual(presets["labels"]["https://openai.com/news"], "OpenAI News")
+        self.assertTrue(presets["ai"]["sources"].startswith("https://openai.com/news\n"))

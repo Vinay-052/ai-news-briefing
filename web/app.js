@@ -245,7 +245,7 @@ function renderEvents(animate = true) {
     const fact = (path, text) => { const li = el("li"); li.append(icon(path), el("span", "", text)); facts.append(li); };
     fact(icons.clock, event.enabled ? days + " · " + event.time + (event.timezone !== localZone ? " " + event.timezone : "")
       + (event.next_run ? " · next " + ago(event.next_run) : "") : "Runs when you press Run now");
-    fact(icons.feed, sourceCount ? plural(sourceCount, "source") : "Bundled AI feeds");
+    fact(icons.feed, plural(sourceCount, "source"));
     fact(icons.chip, providerName(event.provider));
     fact(icons.mail, event.email ? "Web + email" : "Web only");
     copy.append(title, facts);
@@ -340,13 +340,99 @@ for (const zone of [localZone, "UTC", "Asia/Kolkata", "America/New_York", "Ameri
   $("#zones").append(option);
 }
 
+/* ---------- Source list editor ---------- */
+let sourceLabels = {};
+let sourceUrls = [];
+function sourceText() { $("#source-urls").value = sourceUrls.join("\n"); }
+function renderSources(highlight = []) {
+  const list = $("#source-list");
+  $("#source-count").textContent = sourceUrls.length ? "· " + plural(sourceUrls.length, "URL") : "";
+  list.replaceChildren(...sourceUrls.map(url => {
+    const li = el("li", highlight.includes(url) ? "flash" : "");
+    const copy = el("span", "src");
+    let host = url;
+    try { host = new URL(url).hostname.replace(/^www\./, ""); } catch { /* shown raw */ }
+    copy.append(el("b", "", sourceLabels[url] || host), link(url, url));
+    const remove = el("button", "icon", "×");
+    remove.type = "button";
+    remove.setAttribute("aria-label", "Remove " + (sourceLabels[url] || url));
+    remove.addEventListener("click", () => {
+      li.classList.add("removing");
+      li.addEventListener("animationend", () => {
+        sourceUrls = sourceUrls.filter(u => u !== url);
+        sourceText();
+        renderSources();
+        $("#source-input").focus();
+      }, {once: true});
+    });
+    li.append(copy, remove);
+    return li;
+  }));
+  $("#source-empty")?.remove();
+  if (!sourceUrls.length) {
+    const empty = el("p", "source-empty", "No sources yet. Add at least one feed or news page URL below.");
+    empty.id = "source-empty";
+    list.after(empty);
+  }
+  if (highlight.length) setTimeout(() => $$(".flash", list).forEach(node => node.classList.remove("flash")), 60);
+  $("#source-restore").hidden = eventForm.elements.topic.value.trim().toLowerCase() !== "ai"
+    || !presets?.ai || presets.ai.sources.split("\n").every(u => sourceUrls.includes(u));
+}
+function setSources(text) {
+  sourceUrls = [...new Set((text || "").split(/[,\n]/).map(u => u.trim()).filter(Boolean))];
+  sourceText();
+  renderSources();
+}
+function addSources(text) {
+  const candidates = text.split(/[\s,]+/).map(u => u.trim()).filter(Boolean);
+  const bad = candidates.filter(u => !safeHref(u));
+  const fresh = candidates.filter(u => safeHref(u) && !sourceUrls.includes(u));
+  sourceUrls.push(...fresh);
+  sourceText();
+  renderSources(fresh);
+  const dupes = candidates.length - bad.length - fresh.length;
+  const notes = [];
+  if (fresh.length) notes.push("Added " + plural(fresh.length, "source") + ". The other " + (sourceUrls.length - fresh.length) + " are unchanged.");
+  if (dupes) notes.push(plural(dupes, "URL") + " already in the list.");
+  if (bad.length) notes.push("Skipped " + bad.length + " that " + (bad.length === 1 ? "isn't" : "aren't") + " an http(s) URL: " + bad.slice(0, 2).join(", "));
+  $("#event-error").textContent = bad.length ? notes.join(" ") : "";
+  if (fresh.length || dupes) $("#source-count").textContent = "· " + plural(sourceUrls.length, "URL");
+  if (!bad.length && notes.length) toast(notes.join(" "));
+  return !bad.length;
+}
+$("#source-add").addEventListener("click", () => {
+  const input = $("#source-input");
+  if (!input.value.trim()) { input.focus(); return; }
+  if (addSources(input.value)) input.value = "";
+  input.focus();
+});
+$("#source-input").addEventListener("keydown", event => {
+  if (event.key === "Enter") { event.preventDefault(); $("#source-add").click(); }
+});
+$("#source-input").addEventListener("paste", event => {
+  const text = event.clipboardData?.getData("text") || "";
+  if (/[\n,]/.test(text.trim())) {
+    event.preventDefault();
+    addSources(text);
+  }
+});
+$("#source-restore").addEventListener("click", () => addSources(presets.ai.sources));
+async function loadPresets() {
+  try {
+    presets ||= await api("/api/presets");
+    sourceLabels = presets.labels || {};
+  } catch { /* labels are cosmetic */ }
+}
+
 function updateWeekly() {
   const allowed = eventForm.elements.topic.value.trim().toLowerCase() === "ai";
   $("#weekly-label").hidden = !allowed;
   if (!allowed) eventForm.elements.weekly.checked = false;
 }
 function fillEventForm(data) {
-  for (const key of ["name", "topic", "sources", "keywords", "window", "time", "timezone"]) eventForm.elements[key].value = data[key] ?? "";
+  for (const key of ["name", "topic", "keywords", "window", "time", "timezone"]) eventForm.elements[key].value = data[key] ?? "";
+  $("#source-input").value = "";
+  setSources(data.sources);
   for (const key of ["enabled", "email", "weekly"]) eventForm.elements[key].checked = Boolean(data[key]);
   $$("[name=days]", eventForm).forEach(input => { input.checked = data.days.includes(Number(input.value)); });
   const select = $("#event-provider");
@@ -365,10 +451,12 @@ function openEventEditor(event, focus = "name") {
   fillEventForm(event || {name: "", topic: "", sources: "", keywords: "", window: 24, time: "08:00",
     timezone: localZone, days: [0, 1, 2, 3, 4, 5, 6], enabled: false, email: dashboard.ready?.email || false, weekly: false, provider: null});
   eventDialog.showModal();
-  eventForm.elements[focus]?.focus();
+  if (focus === "sources") $("#source-input").focus();
+  else eventForm.elements[focus]?.focus();
+  if (!presets) loadPresets().then(() => renderSources());
 }
 $("#new-event").addEventListener("click", () => openEventEditor());
-eventForm.elements.topic.addEventListener("input", updateWeekly);
+eventForm.elements.topic.addEventListener("input", () => { updateWeekly(); renderSources(); });
 $$(".preset").forEach(b => b.addEventListener("click", async () => {
   $$(".preset").forEach(other => other.setAttribute("aria-pressed", String(other === b)));
   const key = b.dataset.preset;
@@ -379,7 +467,7 @@ $$(".preset").forEach(b => b.addEventListener("click", async () => {
     return;
   }
   try {
-    presets ||= await api("/api/presets");
+    await loadPresets();
     fillEventForm({...presets[key], timezone: localZone, email: dashboard.ready?.email || false, provider: null});
   } catch (error) {
     $("#event-error").textContent = error.message;
@@ -388,6 +476,13 @@ $$(".preset").forEach(b => b.addEventListener("click", async () => {
 eventForm.addEventListener("submit", async event => {
   event.preventDefault();
   if (!eventForm.reportValidity()) return;
+  if ($("#source-input").value.trim() && !addSources($("#source-input").value)) return;
+  $("#source-input").value = "";
+  if (!sourceUrls.length) {
+    $("#event-error").textContent = "Add at least one source URL.";
+    $("#source-input").focus();
+    return;
+  }
   const form = new FormData(eventForm);
   const data = Object.fromEntries(form);
   data.window = Number(data.window);
@@ -738,6 +833,66 @@ async function renderExplore() {
 for (const id of ["#x-window", "#x-event", "#x-category", "#x-signal", "#x-audience"]) $(id).addEventListener("change", renderExplore);
 $("#x-search").addEventListener("input", renderExplore);
 
+/* ---------- Model picker ---------- */
+function needsKey(type, url, requireFlag) {
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* incomplete URL */ }
+  const ollamaCloud = type === "ollama" && (host === "ollama.com" || host.endsWith(".ollama.com"));
+  return ["chatgpt", "anthropic", "opencode"].includes(type) || ollamaCloud || (type === "openai" && requireFlag);
+}
+
+/* Fetches the provider's model list into a <datalist>. `context()` returns the
+   form's current provider, URL and typed key; the server falls back to the
+   saved key only while provider and URL are unchanged. */
+function modelPicker({input, list, status, button, context}) {
+  let models = [];
+  let token = 0;
+  const describe = () => {
+    const match = models.find(m => m.id === input.value.trim());
+    if (match) {
+      status.className = "hint model-status ok";
+      status.textContent = "✓ " + (match.label !== match.id ? match.label + " · " : "") + (match.description || "Available on this provider.");
+    } else if (models.length) {
+      status.className = "hint model-status";
+      status.textContent = plural(models.length, "model") + " available. Start typing or open the list to pick one.";
+    }
+  };
+  async function load(quiet = false) {
+    const ctx = context();
+    if (!ctx.LLM_BASE_URL || !safeHref(ctx.LLM_BASE_URL)) {
+      if (!quiet) { status.className = "hint model-status bad"; status.textContent = "Enter the API base URL first."; }
+      return;
+    }
+    const mine = ++token;
+    status.className = "hint model-status loading";
+    status.textContent = "Loading models…";
+    button.disabled = true;
+    try {
+      const result = await api("/api/providers/models", ctx);
+      if (mine !== token) return;
+      models = result.models;
+      list.replaceChildren(...models.map(m => { const o = el("option"); o.value = m.id; if (m.label !== m.id) o.label = m.label; return o; }));
+      if (!models.length) {
+        status.className = "hint model-status bad";
+        status.textContent = "The provider returned no models. Type the model ID instead.";
+      } else {
+        describe();
+      }
+    } catch (error) {
+      if (mine !== token) return;
+      models = [];
+      list.replaceChildren();
+      status.className = "hint model-status " + (quiet ? "" : "bad");
+      status.textContent = quiet ? "Add the API key, then press Load models to see available IDs." : error.message;
+    } finally {
+      if (mine === token) button.disabled = false;
+    }
+  }
+  button.addEventListener("click", () => load(false));
+  input.addEventListener("input", describe);
+  return {load, reset() { token++; models = []; list.replaceChildren(); status.textContent = ""; status.className = "hint model-status"; button.disabled = false; }};
+}
+
 /* ---------- Settings ---------- */
 const settingsForm = $("#settings-form");
 const fieldGroups = {
@@ -814,7 +969,38 @@ function settingField(key, title, kind, hint) {
   }
   label.append(input);
   if (hint) label.append(el("span", "hint", hint));
+  if (key === "LLM_MODEL") {
+    const row = el("span", "model-row");
+    const list = el("datalist");
+    list.id = "default-models";
+    input.setAttribute("list", list.id);
+    input.autocomplete = "off";
+    input.placeholder = "Pick from the list or type an ID";
+    const load = el("button", "button secondary small", "Load models");
+    load.type = "button";
+    label.replaceChildren(document.createTextNode(title), row);
+    row.append(input, load);
+    const status = el("span", "hint model-status");
+    status.setAttribute("aria-live", "polite");
+    label.append(status, list);
+    defaultPicker = modelPicker({input, list, status, button: load, context: () => ({
+      source: "default", LLM_PROVIDER: settingsForm.elements.LLM_PROVIDER.value,
+      LLM_BASE_URL: settingsForm.elements.LLM_BASE_URL.value.trim(), LLM_API_KEY: settingsForm.elements.LLM_API_KEY.value.trim(),
+    })});
+  }
   return label;
+}
+let defaultPicker = null;
+
+/* Marks the default key field required when the chosen provider needs one and
+   no saved key would still apply. */
+function syncDefaultKey() {
+  const f = settingsForm.elements;
+  const unchanged = f.LLM_PROVIDER.value === settings.LLM_PROVIDER && f.LLM_BASE_URL.value.trim() === settings.LLM_BASE_URL;
+  const required = needsKey(f.LLM_PROVIDER.value, f.LLM_BASE_URL.value, f.REQUIRE_API_KEY.checked)
+    && !(settings.LLM_API_KEY && unchanged && !f.LLM_API_KEY.dataset.clear);
+  f.LLM_API_KEY.required = required;
+  f.LLM_API_KEY.placeholder = required ? "Required for this provider" : settings.LLM_API_KEY && unchanged ? "Saved · leave blank to keep" : "Not needed for this provider";
 }
 
 function renderSettings() {
@@ -827,8 +1013,16 @@ function renderSettings() {
     const [, url, model, help] = defaultProviderTypes[provider.value];
     if (url) settingsForm.elements.LLM_BASE_URL.value = url;
     if (model) settingsForm.elements.LLM_MODEL.value = model;
-    $("#provider-help").textContent = help + " Enter the key for the new endpoint if it needs one.";
+    $("#provider-help").textContent = help;
+    syncDefaultKey();
+    defaultPicker.reset();
+    defaultPicker.load(true);
   });
+  settingsForm.elements.LLM_BASE_URL.addEventListener("change", () => { syncDefaultKey(); defaultPicker.load(true); });
+  settingsForm.elements.LLM_API_KEY.addEventListener("change", () => { if (settingsForm.elements.LLM_API_KEY.value) defaultPicker.load(false); });
+  settingsForm.elements.REQUIRE_API_KEY.addEventListener("change", syncDefaultKey);
+  syncDefaultKey();
+  defaultPicker.load(true);
   renderProviderList();
 }
 
@@ -917,7 +1111,29 @@ function providerTypeChanged(fillDefaults) {
   $("#provider-type-help").textContent = help;
   $("#provider-require").hidden = providerForm.elements.LLM_PROVIDER.value !== "openai";
 }
-$("#provider-type").addEventListener("change", () => providerTypeChanged(true));
+let editingProfile = null;
+const providerPicker = modelPicker({
+  input: providerForm.elements.LLM_MODEL, list: $("#provider-models"), status: $("#provider-model-status"),
+  button: $("#provider-load-models"), context: () => ({
+    source: editingProvider, LLM_PROVIDER: providerForm.elements.LLM_PROVIDER.value,
+    LLM_BASE_URL: providerForm.elements.LLM_BASE_URL.value.trim(), LLM_API_KEY: providerForm.elements.LLM_API_KEY.value.trim(),
+  }),
+});
+function syncProviderKey() {
+  const f = providerForm.elements;
+  const unchanged = editingProfile && f.LLM_PROVIDER.value === editingProfile.LLM_PROVIDER && f.LLM_BASE_URL.value.trim() === editingProfile.LLM_BASE_URL;
+  const saved = Boolean(editingProfile?.LLM_API_KEY && unchanged);
+  const required = needsKey(f.LLM_PROVIDER.value, f.LLM_BASE_URL.value, f.REQUIRE_API_KEY.checked) && !saved;
+  f.LLM_API_KEY.required = required;
+  f.LLM_API_KEY.placeholder = saved ? "Saved · leave blank to keep" : required ? "Required for this provider" : "Optional for this provider";
+  $("#provider-key-hint").textContent = saved ? "Changing the provider or URL clears the saved key."
+    : required ? "This provider rejects requests without a key. It's stored locally in .briefing/ and never shown again."
+    : "Leave blank for a keyless local server.";
+}
+$("#provider-type").addEventListener("change", () => { providerTypeChanged(true); syncProviderKey(); providerPicker.reset(); providerPicker.load(true); });
+providerForm.elements.LLM_BASE_URL.addEventListener("change", () => { syncProviderKey(); providerPicker.load(true); });
+providerForm.elements.LLM_API_KEY.addEventListener("change", () => { if (providerForm.elements.LLM_API_KEY.value) providerPicker.load(false); });
+providerForm.elements.REQUIRE_API_KEY.addEventListener("change", syncProviderKey);
 
 function openProviderEditor(profile) {
   editingProvider = profile?.id ?? null;
@@ -930,9 +1146,11 @@ function openProviderEditor(profile) {
   const data = profile || {name: "", LLM_PROVIDER: "chatgpt", LLM_BASE_URL: providerTypes.chatgpt[1], LLM_MODEL: providerTypes.chatgpt[2], REQUIRE_API_KEY: true, LLM_API_KEY: false};
   for (const key of ["name", "LLM_PROVIDER", "LLM_BASE_URL", "LLM_MODEL"]) providerForm.elements[key].value = data[key];
   providerForm.elements.REQUIRE_API_KEY.checked = data.REQUIRE_API_KEY;
-  providerForm.elements.LLM_API_KEY.placeholder = data.LLM_API_KEY ? "Saved · leave blank to keep" : "Paste the API key";
-  $("#provider-key-hint").textContent = data.LLM_API_KEY ? "Changing the provider or URL clears the saved key." : "Stored locally in .briefing/ and never shown again.";
+  editingProfile = profile || null;
   providerTypeChanged(false);
+  syncProviderKey();
+  providerPicker.reset();
+  providerPicker.load(true);
   providerDialog.showModal();
   providerForm.elements.name.focus();
 }
@@ -944,9 +1162,10 @@ async function saveProvider() {
   data.REQUIRE_API_KEY = providerForm.elements.REQUIRE_API_KEY.checked;
   const saved = await api(editingProvider === null ? "/api/providers" : "/api/providers/" + editingProvider, data);
   editingProvider = saved.id;
+  editingProfile = saved;
   $("#delete-provider").hidden = false;
   providerForm.elements.LLM_API_KEY.value = "";
-  providerForm.elements.LLM_API_KEY.placeholder = saved.LLM_API_KEY ? "Saved · leave blank to keep" : "Paste the API key";
+  syncProviderKey();
   await refresh();
   return saved;
 }

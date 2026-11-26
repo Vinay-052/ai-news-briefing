@@ -14,13 +14,13 @@ python3 -m venv venv
 
 Run it from a terminal and open <http://127.0.0.1:8765>. All app settings are in the dashboard. Use `./run.sh serve` to start the dashboard from a service manager such as launchd or systemd. The server listens on loopback. For phone access, use an authenticated HTTPS reverse proxy on your private network that forwards to `127.0.0.1:8765` with `Host: 127.0.0.1:8765`. The dashboard assumes any client reaching it through the proxy has already authenticated.
 
-1. Open **Settings**, choose the default provider and model, then click **Save & test**. Add SMTP details if you want email delivery. Under **More providers** you can save extra models, such as ChatGPT, Claude or OpenCode, and assign one per event.
+1. Open **Settings**, choose the default provider, paste its API key, pick a model from **Load models** (or type an ID), then click **Save & test**. Hosted providers can't be saved without a key. Add SMTP details if you want email delivery. Under **More providers** you can save extra models, such as ChatGPT, Claude or OpenCode, and assign one per event.
 2. Open **Events**. Edit the existing AI event or create a new event from AI News, Politics, Latest Trends, or Custom.
 3. Paste your own feed or publisher URLs into **News source URLs**, one per line. Use **Edit sources** on any event to add or replace URLs later. Set the lookback, days, time, time zone, and delivery preference, then enable the schedule when ready.
 4. Use **Run now** (or **Refresh now** in the reader) to generate an edition immediately. The dashboard tells you when it's ready.
 5. Read it under **Latest briefing**. Each story shows what happened, why it matters, a takeaway, a blunt read, scores, and numbered citations to the original reporting and related coverage. Switch between **Full briefing**, **Quick scan** and **Headlines**, or filter by category, signal, audience and keyword. **Explore** searches every edition at once. **History** lists every run, **View email layout** shows the exact email, and **Email this edition** re-sends any past edition.
 
-The politics and trends presets contain editable starter feeds. Add sources that fit your geography and interests. The AI event uses the bundled AI feeds when its source field is blank.
+Every preset, including AI news, fills in editable starter URLs. The event editor shows the full list: the briefing reads exactly those URLs, adding a URL keeps the others, and × removes one. On first start after upgrading, an AI event with an empty source list is filled in with the 25 starter URLs it was already using.
 
 ## AI providers
 
