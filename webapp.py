@@ -9,6 +9,7 @@ import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from briefing_store import DAYS, PRESETS, Store, drain, local_zone
 
@@ -92,11 +93,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def read(self):
         store = self.server.store
-        if self.path in ASSETS:
-            filename, mime = ASSETS[self.path]
+        url = urlsplit(self.path)
+        query = parse_qs(url.query)
+        if url.path in ASSETS:
+            filename, mime = ASSETS[url.path]
             self.send(200, (WEB / filename).read_bytes(), mime)
         elif self.path == "/api/dashboard":
-            self.json({"events": store.events(), "runs": store.runs()})
+            self.json({"events": store.events(), "runs": store.runs(),
+                       "providers": store.providers(), "ready": store.readiness()})
+        elif match := re.fullmatch(r"/api/runs/(\d+)", self.path):
+            self.json(store.articles(int(match[1])))
+        elif url.path == "/api/explore":
+            def integer(name):
+                value = (query.get(name) or [""])[0]
+                if value and not value.isdigit():
+                    raise ValueError(f"Invalid {name}.")
+                return int(value) if value else None
+            self.json({"articles": store.explore(hours=integer("hours") or 0, event_id=integer("event"))})
         elif self.path == "/api/settings":
             self.json(store.public_settings())
         elif self.path == "/api/presets":
@@ -117,6 +130,21 @@ class Handler(BaseHTTPRequestHandler):
             self.json(store.save_event(data), 201)
         elif self.path == "/api/settings":
             self.json(store.save_settings(data))
+        elif self.path == "/api/providers":
+            self.json(store.save_provider(data), 201)
+        elif self.path == "/api/providers/test":
+            provider = data.get("provider")
+            if provider is not None and type(provider) is not int:
+                raise ValueError("Invalid provider.")
+            self.json(store.test_provider(provider))
+        elif match := re.fullmatch(r"/api/providers/(\d+)(/delete)?", self.path):
+            if match[2]:
+                store.delete_provider(int(match[1]))
+                self.json({"deleted": True})
+            else:
+                self.json(store.save_provider(data, int(match[1])))
+        elif match := re.fullmatch(r"/api/runs/(\d+)/email", self.path):
+            self.json(store.email_run(int(match[1])))
         elif match := re.fullmatch(r"/api/events/(\d+)(?:/(run|delete))?", self.path):
             event_id = int(match[1])
             action = match[2]

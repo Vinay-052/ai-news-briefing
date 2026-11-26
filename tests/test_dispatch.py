@@ -11,7 +11,7 @@ from unittest.mock import patch
 import httpx
 
 import brief
-from briefing_store import DAYS, PRESETS, Store, drain, run_headless
+from briefing_store import DAYS, PRESETS, Store, drain, next_run, run_headless
 from config import make_config, using_config
 from webapp import Dashboard
 
@@ -155,6 +155,12 @@ class DispatchTest(unittest.TestCase):
         self.assertIn(primary, message.get_body(preferencelist=("plain",)).get_content())
         self.assertIn(related, message.get_body(preferencelist=("html",)).get_content())
         self.assertEqual(next(message.iter_attachments()).get_content_type(), "application/pdf")
+        edition = self.store.articles(run_id)
+        self.assertTrue(edition["structured"])
+        self.assertEqual(edition["articles"][0]["link"], primary)
+        self.assertEqual(edition["articles"][0]["also_seen_in"][0]["link"], related)
+        self.assertEqual(edition["articles"][0]["writeup"]["what_happened"], "The council approved the budget.")
+        self.assertEqual([a["link"] for a in self.store.explore(hours=24)], [primary])
 
     def test_headless_dry_run_writes_archive_without_sending(self):
         self.configured_gateway()
@@ -207,3 +213,139 @@ class DispatchTest(unittest.TestCase):
             self.assertIn('<base target="_blank">', report.text)
             self.assertIn("sandbox", report.headers["Content-Security-Policy"])
             self.assertEqual(client.get("/api/dashboard").json()["runs"][0]["id"], run_id)
+
+
+class ProviderAndReaderTest(unittest.TestCase):
+    # Share the fixtures without re-running DispatchTest's own tests.
+    setUp = DispatchTest.setUp
+    event = DispatchTest.event
+    configured_gateway = DispatchTest.configured_gateway
+
+    def test_anthropic_request(self):
+        def reply(request):
+            self.assertEqual(request.url.path, "/v1/messages")
+            self.assertEqual(request.headers["x-api-key"], "fixture-key")
+            self.assertEqual(request.headers["anthropic-version"], "2023-06-01")
+            self.assertNotIn("Authorization", request.headers)
+            body = json.loads(request.content)
+            self.assertEqual(body["messages"][0]["content"], "Fixture prompt")
+            return httpx.Response(200, json={"content": [{"type": "text", "text": "Fixture response"}]})
+
+        async def call():
+            cfg = make_config({"LLM_PROVIDER": "anthropic", "LLM_BASE_URL": "https://claude.example/v1",
+                               "LLM_MODEL": "claude-fixture", "LLM_API_KEY": "fixture-key"})
+            with using_config(cfg):
+                async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+                    return await brief.llm_call(client, "Fixture prompt")
+
+        self.assertEqual(asyncio.run(call()), "Fixture response")
+        with using_config(make_config({"LLM_PROVIDER": "anthropic", "LLM_API_KEY": ""})):
+            with self.assertRaises(ValueError):
+                brief.check_configuration()
+
+    def test_provider_profiles_mask_keys_and_drive_event_runs(self):
+        profile = self.store.save_provider({
+            "name": "Claude", "LLM_PROVIDER": "anthropic", "LLM_BASE_URL": "https://claude.example/v1",
+            "LLM_MODEL": "claude-fixture", "LLM_API_KEY": "secret-one", "REQUIRE_API_KEY": True})
+        self.assertIs(profile["LLM_API_KEY"], True)
+        self.assertIs(self.store.providers()[0]["LLM_API_KEY"], True)
+        # A blank key keeps the stored one while the endpoint is unchanged...
+        self.store.save_provider(dict(profile, LLM_API_KEY="", LLM_MODEL="claude-other"), profile["id"])
+        self.assertEqual(self.store.provider(profile["id"])["LLM_API_KEY"], "secret-one")
+        # ...but never follows the profile to a different host.
+        self.store.save_provider(dict(profile, LLM_API_KEY="", LLM_BASE_URL="https://elsewhere.example/v1"),
+                                 profile["id"])
+        self.assertEqual(self.store.provider(profile["id"])["LLM_API_KEY"], "")
+        self.store.save_provider(dict(profile, LLM_API_KEY="secret-two"), profile["id"])
+        with self.assertRaises(ValueError):
+            self.store.save_provider(dict(profile, LLM_PROVIDER="bogus"))
+
+        event = self.event(provider=profile["id"])
+        with self.assertRaises(ValueError):
+            self.event(provider=999)
+        with self.assertRaises(ValueError):
+            self.store.delete_provider(profile["id"])
+
+        seen = {}
+        def build(name, **kwargs):
+            seen.update(provider=brief.CONFIG.PROVIDER, model=brief.CONFIG.LLM_MODEL, key=brief.CONFIG.LLM_API_KEY)
+            return {"articles": [], "errors": []}, None, "<html></html>"
+        self.store.enqueue(event["id"])
+        with patch("brief.build_briefing", side_effect=build):
+            drain(self.store)
+        self.assertEqual(seen, {"provider": "anthropic", "model": "claude-fixture", "key": "secret-two"})
+
+        self.store.save_event(dict(self.store.event(event["id"]), provider=None), event["id"])
+        self.store.delete_provider(profile["id"])
+        self.assertEqual(self.store.providers(), [])
+
+    def test_connection_test_reports_failures_without_leaking_the_key(self):
+        self.store.save_settings({"LLM_PROVIDER": "chatgpt", "LLM_BASE_URL": "https://model.example/v1",
+                                  "LLM_MODEL": "fixture", "LLM_API_KEY": "leaky-key"})
+        with patch("brief.test_connection", side_effect=RuntimeError("denied for leaky-key")):
+            result = self.store.test_provider()
+        self.assertFalse(result["ok"])
+        self.assertNotIn("leaky-key", result["message"])
+        with patch("brief.test_connection", return_value="ready"):
+            self.assertTrue(self.store.test_provider()["ok"])
+
+    def test_next_run_and_readiness(self):
+        event = self.event(time="09:00", timezone="UTC", days=[0])
+        stored = self.store.event(event["id"])
+        monday = datetime(2026, 11, 23, 8, 0, tzinfo=timezone.utc)
+        self.assertEqual(next_run(stored, 0, monday), datetime(2026, 11, 23, 9, 0, tzinfo=timezone.utc).timestamp())
+        self.assertEqual(next_run(stored, 0, monday.replace(hour=10)),
+                         datetime(2026, 11, 30, 9, 0, tzinfo=timezone.utc).timestamp())
+        self.assertIsNone(next_run(dict(stored, enabled=False), 0, monday))
+        self.store.save_settings({"LLM_PROVIDER": "chatgpt", "LLM_BASE_URL": "https://model.example/v1",
+                                  "LLM_MODEL": "fixture"})
+        self.assertIn("API key", self.store.readiness()["model"])
+
+    def test_resend_archived_edition_by_email(self):
+        self.configured_gateway()
+        run_id = self.store.enqueue(self.event()["id"])
+        with self.assertRaises(KeyError):
+            self.store.email_run(run_id)
+        with self.store.connect() as db:
+            db.execute("UPDATE runs SET html=?, status='complete' WHERE id=?", ("<html>Edition</html>", run_id))
+        with patch("brief.send_email") as send:
+            self.assertEqual(self.store.email_run(run_id)["to"], "reader@example.com")
+        self.assertIn("Politics Briefing", send.call_args.args[1])
+        self.assertEqual(self.store.runs()[0]["delivered"], 1)
+        # Editions archived before the reader existed still open, with no articles.
+        self.assertFalse(self.store.articles(run_id)["structured"])
+
+    def test_http_reader_explore_and_provider_routes(self):
+        try:
+            server = Dashboard(0, self.store)
+        except PermissionError:
+            self.skipTest("The test environment prevents binding to localhost")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        headers = {"X-Briefing-Request": "dashboard"}
+        run_id = self.store.enqueue(self.event()["id"])
+        payload = {"articles": [{"title": "Story", "link": "https://news.example/a"}], "errors": [], "skills": None}
+        with self.store.connect() as db:
+            db.execute("UPDATE runs SET news=?, html='<html></html>', status='complete' WHERE id=?",
+                       (json.dumps(payload), run_id))
+        with httpx.Client(base_url=f"http://127.0.0.1:{server.server_port}") as client:
+            dashboard = client.get("/api/dashboard").json()
+            self.assertIn("ready", dashboard)
+            self.assertIn("next_run", dashboard["events"][0])
+            self.assertEqual(client.get(f"/api/runs/{run_id}").json()["articles"][0]["title"], "Story")
+            self.assertEqual(client.get("/api/explore?hours=24").json()["articles"][0]["run_id"], run_id)
+            self.assertEqual(client.get("/api/explore?hours=abc").status_code, 400)
+            created = client.post("/api/providers", headers=headers, json={
+                "name": "Gateway", "LLM_PROVIDER": "openai", "LLM_BASE_URL": "https://gw.example/v1",
+                "LLM_MODEL": "m", "LLM_API_KEY": "k", "REQUIRE_API_KEY": True})
+            self.assertEqual(created.status_code, 201)
+            self.assertIs(created.json()["LLM_API_KEY"], True)
+            provider_id = created.json()["id"]
+            self.assertNotIn('"k"', client.get("/api/dashboard").text)
+            with patch("brief.test_connection", return_value="ready"):
+                tested = client.post("/api/providers/test", headers=headers, json={"provider": provider_id})
+            self.assertTrue(tested.json()["ok"])
+            deleted = client.post(f"/api/providers/{provider_id}/delete", headers=headers, json={})
+            self.assertEqual(deleted.json(), {"deleted": True})

@@ -111,7 +111,7 @@ class Config:
 
 
 def _resolve_provider(cfg) -> str:
-    if cfg.LLM_PROVIDER in ("ollama", "openai", "chatgpt", "opencode"):
+    if cfg.LLM_PROVIDER in ("ollama", "openai", "chatgpt", "opencode", "anthropic"):
         return cfg.LLM_PROVIDER
     url = (cfg.LLM_BASE_URL or "").lower()
     return "ollama" if ("11434" in url or "ollama" in url) else "openai"
