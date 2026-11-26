@@ -15,3 +15,6 @@ history/
 skills.json
 __pycache__/
 *.pyc
+
+# Dashboard state, credentials, schedules, and briefing archive
+.briefing/

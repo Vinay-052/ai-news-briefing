@@ -1,13 +1,13 @@
-"""Config for the AI News Briefing script.
-
-Reads a local `.env` (KEY=VALUE lines) sitting next to this file; real
-environment variables override it. No external dependency (no python-dotenv).
-"""
+"""Dashboard settings layered on top of legacy environment defaults."""
 import os
+import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 import re
 from pathlib import Path
 from urllib.parse import urlparse
 
+STATE_DIR = Path(os.environ.get("BRIEFING_STATE_DIR", Path(__file__).resolve().parent / ".briefing")).expanduser()
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 
 
@@ -51,10 +51,7 @@ def _bool(key, default):
 
 
 class Config:
-    # LLM. Two providers:
-    #   ollama  — a local Ollama server, native /api/chat (default)
-    #   openai  — any OpenAI-compatible /chat/completions gateway
-    # "auto" picks ollama when the base URL looks like an Ollama host.
+    # "auto" preserves detection for legacy deployments.
     LLM_PROVIDER = (_get("LLM_PROVIDER", "auto") or "auto").lower()
     LLM_BASE_URL = _get("LLM_BASE_URL", "http://localhost:11434")
     LLM_API_KEY = _get("LLM_API_KEY")       # not needed for local ollama
@@ -83,6 +80,8 @@ class Config:
     MAIL_TO = _get("MAIL_TO") or (_get("MAIL_FROM") or _get("SMTP_USER"))
 
     # Briefing options
+    REQUIRE_API_KEY = True
+    TOPIC = "ai"
     SOURCES_RAW = _get("SOURCES")           # comma/newline separated; empty => bundled preset
     KEYWORDS = [k for k in re.split(r",", _get("KEYWORDS") or "") if k.strip()]
     WINDOW_HOURS = _int("WINDOW_HOURS", 24)
@@ -112,7 +111,7 @@ class Config:
 
 
 def _resolve_provider(cfg) -> str:
-    if cfg.LLM_PROVIDER in ("ollama", "openai"):
+    if cfg.LLM_PROVIDER in ("ollama", "openai", "chatgpt", "opencode"):
         return cfg.LLM_PROVIDER
     url = (cfg.LLM_BASE_URL or "").lower()
     return "ollama" if ("11434" in url or "ollama" in url) else "openai"
@@ -127,24 +126,51 @@ def _is_ollama_cloud(cfg) -> bool:
     defaults below and the request built in brief._ollama_request.
     """
     host = urlparse(cfg.LLM_BASE_URL or "").hostname or ""
-    return host.lower().endswith("ollama.com")
+    return host.lower() == "ollama.com" or host.lower().endswith(".ollama.com")
 
 
-CONFIG = Config()
+DEFAULTS = {key: value for key, value in vars(Config).items() if key.isupper() and key != "TOPIC"}
 
-# Resolved once, so callers never re-derive it.
-CONFIG.PROVIDER = _resolve_provider(CONFIG)
-CONFIG.OLLAMA_CLOUD = CONFIG.PROVIDER == "ollama" and _is_ollama_cloud(CONFIG)
-if not CONFIG.LLM_TIMEOUT:
-    if CONFIG.OLLAMA_CLOUD:
-        # Hosted and fast, but the weekly analysis still asks for 8000 tokens —
-        # minutes, not the 90s an article summary needs.
-        CONFIG.LLM_TIMEOUT = 300
-    elif CONFIG.PROVIDER == "ollama":
-        CONFIG.LLM_TIMEOUT = 900
-    else:
-        CONFIG.LLM_TIMEOUT = CONFIG.EXTRACT_TIMEOUT
-if not CONFIG.LLM_CONCURRENCY:
-    # One local GPU serves one request at a time; a hosted service does not.
-    CONFIG.LLM_CONCURRENCY = 1 if (CONFIG.PROVIDER == "ollama" and not CONFIG.OLLAMA_CLOUD) \
-        else CONFIG.CONCURRENCY
+
+def read_settings():
+    path = STATE_DIR / "settings.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def make_config(settings=None, overrides=None):
+    cfg = Config()
+    for values in (read_settings() if settings is None else settings, overrides or {}):
+        for name, value in values.items():
+            setattr(cfg, name, value)
+    for name in ("PDF_DIR", "CV_PATH"):
+        setattr(cfg, name, os.path.expanduser(getattr(cfg, name)))
+    cfg.MAIL_FROM = cfg.MAIL_FROM or cfg.SMTP_USER
+    cfg.MAIL_TO = cfg.MAIL_TO or cfg.MAIL_FROM
+    cfg.PROVIDER = _resolve_provider(cfg)
+    cfg.OLLAMA_CLOUD = cfg.PROVIDER == "ollama" and _is_ollama_cloud(cfg)
+    if not cfg.LLM_TIMEOUT:
+        cfg.LLM_TIMEOUT = (300 if cfg.OLLAMA_CLOUD else 900) if cfg.PROVIDER == "ollama" else cfg.EXTRACT_TIMEOUT
+    if not cfg.LLM_CONCURRENCY:
+        cfg.LLM_CONCURRENCY = 1 if cfg.PROVIDER == "ollama" and not cfg.OLLAMA_CLOUD else cfg.CONCURRENCY
+    return cfg
+
+
+_active = ContextVar("briefing_config", default=None)
+_initial = make_config()
+
+
+class ActiveConfig:
+    def __getattr__(self, name):
+        return getattr(_active.get() or _initial, name)
+
+
+CONFIG = ActiveConfig()
+
+
+@contextmanager
+def using_config(cfg):
+    token = _active.set(cfg)
+    try:
+        yield
+    finally:
+        _active.reset(token)

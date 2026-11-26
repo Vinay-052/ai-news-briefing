@@ -17,6 +17,8 @@ from __future__ import annotations
 import html as _html
 import re
 import time
+from datetime import datetime
+from urllib.parse import urlsplit
 from typing import Dict, List
 
 # Clean, light, print-friendly palette (readability first — not theme-matched).
@@ -51,7 +53,17 @@ def _esc(s) -> str:
 
 def _safe_url(u: str) -> str:
     u = (u or "").strip()
-    return _esc(u) if u[:7].lower() in ("http://", "https:") else ""
+    try:
+        parts = urlsplit(u)
+        return _esc(u) if parts.scheme in ("http", "https") and parts.hostname else ""
+    except ValueError:
+        return ""
+
+
+def _citation(url, label):
+    href = _safe_url(url)
+    return (f'<a href="{href}" style="color:{_PRIMARY};text-decoration:underline">{_esc(label)}</a>'
+            if href else _esc(label))
 
 
 def _rel_time(ts) -> str:
@@ -151,7 +163,7 @@ def _no_bs_box(text: str) -> str:
     )
 
 
-def _card(a: Dict) -> str:
+def _card(a: Dict, ai: bool = True) -> str:
     href = _safe_url(a.get("link"))
     title = _esc(a.get("title") or a.get("link") or "Untitled")
     title_html = (f'<a href="{href}" style="color:{_TEXT};text-decoration:none">{title}</a>'
@@ -160,6 +172,7 @@ def _card(a: Dict) -> str:
     src_html = (f'<a href="{href}" style="color:{_PRIMARY};text-decoration:none">{source} &#8599;</a>'
                 if href and source else source)
     rel = _rel_time(a.get("timestamp"))
+    rel_html = f'<span style="color:{_MUTED}"> &nbsp;·&nbsp; {rel}</span>' if rel else ""
     scores = a.get("scores") or {}
     signal = a.get("signal") or ""
 
@@ -177,15 +190,17 @@ def _card(a: Dict) -> str:
     if w.get("why_it_matters"):
         body += _label("Why it matters") + _para(w["why_it_matters"])
     if w.get("builder_takeaway"):
-        body += _label("Builder takeaway") + _para(w["builder_takeaway"])
+        body += _label("Builder takeaway" if ai else "What to watch") + _para(w["builder_takeaway"])
     if not body and a.get("summary"):
         body = _para(a["summary"])
     if w.get("no_bs_read"):
         body += _no_bs_box(w["no_bs_read"])
 
-    also = [x.get("source", "") for x in (a.get("also_seen_in") or []) if x.get("source")]
-    also_html = (f'<div style="font:400 11px {_FONT};color:{_MUTED};margin-top:10px">'
-                 f'also reported by: {_esc(", ".join(also))}</div>') if also else ""
+    citations = [_citation(a.get("link"), a.get("source") or "Original article")]
+    citations.extend(_citation(item.get("link"), item.get("source") or "Related coverage")
+                     for item in (a.get("also_seen_in") or []) if _safe_url(item.get("link")))
+    also_html = (f'<div style="font:400 12px {_FONT};color:{_MUTED};margin-top:10px">'
+                 f'Sources: {" · ".join(citations)}</div>')
 
     return (
         f'<table role="presentation" cellpadding="0" cellspacing="0" bgcolor="{_CARD}" '
@@ -199,7 +214,7 @@ def _card(a: Dict) -> str:
         f'</tr></table>'
         f'<div style="font:600 17px/1.35 {_FONT};color:{_TEXT};margin-top:8px">{title_html}</div>'
         f'<div style="font:500 11.5px {_MONO};margin-top:4px">{src_html}'
-        f'{("<span style=\"color:" + _MUTED + "\"> &nbsp;·&nbsp; " + rel + "</span>") if rel else ""}</div>'
+        f'{rel_html}</div>'
         f'{body}'
         f'<div style="margin-top:14px">{_scores_block(scores)}</div>'
         f'{also_html}'
@@ -214,6 +229,8 @@ def _top_signal(a: Dict) -> str:
     scores = a.get("scores") or {}
     txt = _esc((a.get("writeup") or {}).get("no_bs_read")
                or (a.get("writeup") or {}).get("why_it_matters") or a.get("summary") or "")
+    text_html = (f'<div style="font:400 13.5px/1.55 {_FONT};color:{_MUTED};margin-top:8px">{txt}</div>'
+                 if txt else "")
     return (
         f'<table role="presentation" cellpadding="0" cellspacing="0" bgcolor="{_CARD}" '
         f'style="width:100%;border-collapse:separate;background:{_CARD};'
@@ -221,7 +238,7 @@ def _top_signal(a: Dict) -> str:
         f'<tr><td style="padding:16px 18px;border-top:3px solid {_PRIMARY};border-radius:12px">'
         f'<div style="font:700 9.5px {_MONO};letter-spacing:.2em;text-transform:uppercase;color:{_PRIMARY}">Top signal</div>'
         f'<div style="font:700 19px/1.3 {_FONT};color:{_TEXT};margin-top:8px">{title_html}</div>'
-        f'{("<div style=\"font:400 13.5px/1.55 " + _FONT + ";color:" + _MUTED + ";margin-top:8px\">" + txt + "</div>") if txt else ""}'
+        f'{text_html}'
         f'<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin-top:12px;border-collapse:collapse"><tr>'
         f'<td style="font:600 10px {_MONO};letter-spacing:.1em;text-transform:uppercase;color:{_MUTED}">{_esc(a.get("source") or "")}</td>'
         f'<td style="text-align:right;white-space:nowrap">{_overall(scores.get("overall"))}</td>'
@@ -241,7 +258,7 @@ def _what_changed(arts: List[Dict], n: int = 5) -> str:
         rows += (
             f'<tr><td valign="top" style="width:26px;font:700 11px {_MONO};color:{_PRIMARY};padding:6px 0">'
             f'{i:02d}</td>'
-            f'<td style="padding:6px 0;font:400 13px/1.5 {_FONT};color:{_TEXT}">{_esc(line)}</td></tr>'
+            f'<td style="padding:6px 0;font:400 13px/1.5 {_FONT};color:{_TEXT}">{_esc(line)} &nbsp;{_citation(a.get("link"), f"[{i}]")}</td></tr>'
         )
     return (
         f'<table role="presentation" cellpadding="0" cellspacing="0" bgcolor="{_CARD}" '
@@ -315,23 +332,24 @@ def _skills_block(skills: Dict) -> str:
 
 
 def render_news_html(news: Dict, *, title: str = "AI News Briefing",
-                     detail_limit: int = 20, skills: Dict | None = None) -> str:
+                     detail_limit: int = 20, skills: Dict | None = None, ai: bool = True,
+                     when: datetime | None = None) -> str:
     """Render a NewsResearcher result dict into an email-safe HTML briefing."""
-    from datetime import datetime
     arts: List[Dict] = list(news.get("articles") or [])
-    now = datetime.now()
+    now = when or datetime.now()
     date_label = now.strftime(f"%A, %B {now.day}, %Y")
     n = len(arts)
     srcs = len(news.get("input_sources") or [])
     errs = len(news.get("errors") or [])
 
+    intro = ("What actually changed in AI, and what builders should care about." if ai
+             else "The latest stories, with context and links to the original reporting.")
     head = (
         f'<div style="font:700 10px {_MONO};letter-spacing:.22em;text-transform:uppercase;color:{_PRIMARY}">'
         f'No-BS Briefing &nbsp;·&nbsp; {_esc(date_label)}</div>'
         f'<div style="font:700 27px/1.15 {_FONT};color:{_TEXT};margin-top:8px">{_esc(title)}</div>'
         f'<div style="font:400 13.5px/1.5 {_FONT};color:{_MUTED};margin-top:8px">'
-        f'What actually changed in AI, and what builders should care about. '
-        f'Source-tier transparent. Hype risk surfaced.</div>'
+        f'{intro}</div>'
         f'<div style="font:500 11.5px {_MONO};color:{_MUTED};margin-top:8px;letter-spacing:.04em">'
         f'{n} ARTICLE{"S" if n != 1 else ""} · {srcs} SOURCE{"S" if srcs != 1 else ""}'
         f'{f" · {errs} SOURCE ISSUE" + ("S" if errs != 1 else "") if errs else ""}</div>'
@@ -345,7 +363,7 @@ def render_news_html(news: Dict, *, title: str = "AI News Briefing",
         body += (f'<div style="font:600 10px {_MONO};letter-spacing:.16em;text-transform:uppercase;'
                  f'color:{_MUTED};margin:0 0 10px">Main updates &nbsp;·&nbsp; '
                  f'{min(len(arts), detail_limit)} of {len(arts)}</div>')
-        body += "".join(_card(a) for a in arts[:detail_limit])
+        body += "".join(_card(a, ai) for a in arts[:detail_limit])
         rest = arts[detail_limit:]
         if rest:
             rows = "".join(_more_row(a) for a in rest)
@@ -362,7 +380,7 @@ def render_news_html(news: Dict, *, title: str = "AI News Briefing",
 
     footer = (f'<div style="font:400 11px {_FONT};color:{_MUTED};text-align:center;'
               f'margin-top:26px;padding-top:16px;border-top:1px solid {_BORDER}">'
-              f'AI News Briefing · generated automatically</div>')
+              f'News Briefing · generated automatically</div>')
 
     return (
         '<!DOCTYPE html><html><head><meta charset="utf-8">'

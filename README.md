@@ -1,174 +1,77 @@
-# AI News Briefing (standalone)
+# Dispatch · News Briefing
 
-A single daily job: fetch AI-news feeds, summarize + score each article with an
-LLM, and email a scannable HTML briefing. No web app, no database — just a
-script, a `.env`, and a cron line.
+Dispatch turns RSS feeds and publisher pages into scheduled briefings with linked citations. Read editions in the web archive, send them by email, or run the same pipeline unattended on an always-on computer.
 
-Each run also saves a dated PDF of the briefing, and once a week it compares the
-news against your CV and tells you which skills to pick up.
+## Start the dashboard
 
-**It runs on a local model by default.** Point it at [Ollama](https://ollama.com)
-and the whole thing costs nothing per run and keeps your reading list on your own
-machine. No GPU? [Ollama Cloud](https://docs.ollama.com/cloud) uses the identical
-API, so a 16 GB N100 mini PC can run the whole job. Any OpenAI-compatible gateway
-works too.
-
-## LLM backend
-Two providers, chosen with `LLM_PROVIDER`:
-
-| | `ollama` local (default) | `ollama` cloud | `openai` |
-|---|---|---|---|
-| Endpoint | `POST {base}/api/chat` | same, on `ollama.com` | `POST {base}/chat/completions` |
-| Base URL | `http://localhost:11434` | `https://ollama.com` | e.g. `https://api.openai.com/v1` |
-| API key | not used | required | required |
-| Hardware | your GPU/RAM | none | none |
-| Cost | electricity | subscription | per token |
-
-`LLM_PROVIDER=auto` sniffs the base URL and picks `ollama` for an Ollama host.
-
-### Local Ollama
-```bash
-ollama pull gemma4:26b                      # ~17 GB
-./configure.py --use-ollama gemma4:26b      # writes provider/URL/model, clears the API key
-./configure.py --test-llm                   # confirm it answers
-```
-
-### Ollama Cloud
-The same native API on somebody else's GPU, so a small always-on box (an N100
-mini PC, a Pi) can run the whole briefing:
+Requires Python 3.9+ on macOS or Linux.
 
 ```bash
-./configure.py --set LLM_API_KEY=<your-key> --use-ollama-cloud gpt-oss:120b
-./configure.py --test-llm
-```
-Cloud runs skip the local-only bits automatically: no `keep_alive` (there are no
-weights to hold), no waiting for a service to boot, and `LLM_CONCURRENCY`
-defaults to `CONCURRENCY` instead of 1, since a hosted service serves parallel
-requests. Rate limits surface as HTTP 429, which the existing retry/backoff
-already handles.
-
-Why the native `/api/chat` and not Ollama's `/v1` shim: only the native API
-accepts `num_ctx` (the shim's default window silently truncates a 12 000-char
-article) and `think` (thinking mode would spend the output budget on reasoning
-the briefing throws away).
-
-Tuning that matters locally — all optional, defaults in brackets:
-- `LLM_NUM_CTX` [8192] — must cover `MAX_CONTENT_CHARS`/4 plus the prompt.
-- `LLM_CONCURRENCY` [1 for ollama] — one GPU serves one request at a time;
-  article *fetching* stays parallel via `CONCURRENCY`.
-- `LLM_TIMEOUT` [900s for ollama] — local generation is minutes, not seconds.
-- `LLM_KEEP_ALIVE` [30m] — keeps the weights resident, so a 90-article run
-  doesn't reload them.
-- `LLM_THINK` [false] — leave off for JSON work.
-
-Hardware: a ~26B model at Q4 wants ~20 GB of (V)RAM and takes roughly 30-60 s
-per article. A smaller model (`ollama pull gemma4:6b`, `qwen3:8b`) cuts that a
-lot; drop `PER_FEED_LIMIT`/`MAX_CONTENT_CHARS` to cut it further. On a machine
-too small to serve a model at all — a Raspberry Pi, say — use
-`LLM_PROVIDER=openai` and point at a gateway, or at an Ollama server on
-another box (`LLM_BASE_URL=http://that-box:11434`).
-
-## Files
-- `brief.py` — the whole pipeline (fetch → extract → LLM classify/score → dedup → rank → HTML/PDF → email).
-- `configure.py` — change any setting or the schedule; see **[CONFIGURING.md](CONFIGURING.md)**.
-- `skills.py` — the skills gap: view it, and mark skills off as you learn them.
-- `skills_gap.py` — CV parsing, news history, and the gap analysis.
-- `pdf_report.py` — the PDF renderer (`fpdf2`, no system libraries).
-- `sources.py` — curated "AI News" preset + feed auto-discovery map.
-- `taxonomy.py` — categories/signals/audiences + deterministic scoring.
-- `render.py` — the card-based HTML email renderer.
-- `config.py` — reads `.env`.
-- `requirements.txt` — `feedparser`, `httpx`, `beautifulsoup4`, `fpdf2`, `pypdf` (+ optional `trafilatura`).
-
-Not in git (personal / regenerable): `.env`, your CV PDF, `skills.json`,
-`history/`, saved report PDFs, `brief.log`.
-
-## PDF archive
-Every run writes `AI_News_Briefing_<YYYY-MM-DD>_<HHMM>.pdf` into this folder —
-the same briefing as the email, laid out for print. Turn it off or move it:
-```bash
-./configure.py --set SAVE_PDF=false
-./configure.py --set PDF_DIR=~/briefings
-./configure.py --set ATTACH_PDF=true      # also attach it to the email
-```
-
-## Weekly skills gap
-Drop your CV in this folder as `cv.pdf` (or point `CV_PATH` at it:
-`./configure.py --set CV_PATH=~/docs/my_cv.pdf`). It stays out of git.
-
-Sunday's run (`run.sh --weekly`) additionally reads the week's news history,
-compares it with the skills on your CV, and appends a **"Skills to acquire"**
-section — each entry with why it matters now, search keywords to learn it, and
-which stories it came from. It lands in both the email and the PDF.
-
-```bash
-./skills.py                 # overview: CV skills, learned, current gaps
-./skills.py gaps            # re-run the analysis now (uses stored history)
-./skills.py gaps --send     # ...and email just the skills report
-./skills.py learned "vLLM"  # mark learned -> never suggested again
-./skills.py cv              # what it read from your CV
-./skills.py refresh-cv      # after you update the CV PDF
-```
-The CV is parsed once and cached (keyed on the file's hash), so it's only
-re-read when the PDF actually changes.
-
-## Setup
-Needs Python 3.9+ and, for the default local backend, Ollama running.
-```bash
-git clone https://github.com/<you>/ai-news-briefing.git
-cd ai-news-briefing
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
-
-ollama pull gemma4:26b                    # or any model you can run
-./configure.py --use-ollama gemma4:26b    # skip if you're using a gateway
-./configure.py                            # SMTP settings (writes .env, chmod 600)
-./configure.py --test-llm                 # confirm the model answers
-./configure.py --test-email               # confirm mail arrives
-
-./run.sh --dry-run           # full run, no email — writes last_briefing.html
-xdg-open last_briefing.html
-./run.sh                     # build + send for real
+./venv/bin/python webapp.py
 ```
 
-On a small machine you can skip `trafilatura` (drop it from requirements);
-extraction falls back to BeautifulSoup automatically.
+Open <http://127.0.0.1:8765>. All app settings are in the dashboard. The server listens on loopback. For phone access, use an authenticated HTTPS reverse proxy on your private network that forwards to `127.0.0.1:8765` with `Host: 127.0.0.1:8765`. The dashboard assumes any client reaching it through the proxy has already authenticated.
 
-## Changing settings later
-Never hand-edit `.env` — use the tool (validates, keeps a `.env.bak`):
+1. Open **Settings** and enter your provider and model. Add SMTP details if you want email delivery.
+2. Open **Events**. Edit the existing AI event or create a new event from AI News, Politics, Latest Trends, or Custom.
+3. Set the topic, source URLs, lookback, days, time, time zone, and delivery preference. Enable the schedule when ready.
+4. Use **Run now** to generate an edition immediately. Follow its progress in **Recent activity** and open the edition from **Archive**. The email and web editions both link to the original reporting and available related sources.
+
+The politics and trends presets contain editable starter feeds. Add sources that fit your geography and interests. The AI event uses the bundled AI feeds when its source field is blank.
+
+## AI providers
+
+| Provider | Endpoint and credentials |
+| --- | --- |
+| Ollama local | Use `http://localhost:11434` and a model already installed in Ollama. |
+| Ollama Cloud | Use `https://ollama.com` with an Ollama API key and cloud model. |
+| OpenAI / ChatGPT API | Uses the OpenAI Responses API with an OpenAI API key and an API-accessible model. |
+| OpenCode Console | Uses the Console's OpenAI-compatible inference endpoint with a Console API key and a model available for direct API use. |
+| OpenAI-compatible gateway | Enter the service's API base URL, model ID, and key. For a trusted keyless gateway, clear **Require a key for compatible gateways**. |
+
+For available models and API details, see the [OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create) and [OpenCode Console model endpoints](https://opencode.ai/docs/console/models/).
+
+## Unattended runs
+
+The dashboard's server runs the scheduler even when the browser is closed. You can also run a worker with no HTTP listener, or trigger one scheduler pass periodically from an existing system scheduler.
+
 ```bash
-./configure.py --show                          # current config, secrets masked
-./configure.py --set MAIL_TO=you@example.com   # change the recipient
-./configure.py --set LLM_MODEL=gemma4:6b       # switch model
-./configure.py --use-ollama                    # move to a local model
-./configure.py --llm                           # rotate key / change endpoint
+./venv/bin/python webapp.py worker
+./venv/bin/python webapp.py tick
 ```
-Full cookbook — recipients, API keys, endpoints, sources, schedule,
-troubleshooting: **[CONFIGURING.md](CONFIGURING.md)**.
 
-## Schedule (cron, local time)
+Each enabled event can run once per scheduled local date. The worker catches up a due slot within 24 hours of its scheduled time. Enabling an event or changing its days, time, or time zone starts the new schedule from the time of that change. The workers share a lock so dashboard, cron, and CLI runs use one pipeline at a time. If the worker exits mid-run, the archive marks the interrupted run as failed on restart. You can rerun it from the event.
+
+Existing headless commands still work and use dashboard settings.
+
 ```bash
-sudo timedatectl set-timezone Asia/Kolkata   # so 10:00 means your local 10am
-./configure.py --schedule 10:00              # daily; Sunday also does the skills gap
-./configure.py --schedule 10:00 --weekly-day 6   # move the skills run to Saturday
-./configure.py --schedule off                # stop automatic runs
+./run.sh                          # run the original AI event and use its delivery preference
+./run.sh --dry-run                # archive and write last_briefing.html, skip email
+./run.sh --weekly                 # include the CV skills gap
+./run.sh --event 2                # run an event by ID (see dashboard API at /api/dashboard)
 ```
-This installs two entries — Mon-Sat run the plain briefing, the weekly day runs
-it with `--weekly` — so you still get exactly one email per day.
-Logs append to `brief.log`. Run `./run.sh --dry-run` to test the cron path.
 
-## Moving it to another machine
-1. Clone this repo there (or copy the folder — but **never copy `venv/`**).
-2. `python3 -m venv venv && ./venv/bin/pip install -r requirements.txt`
-3. Bring your `.env` across (it's portable; keep it `chmod 600`) — or just run
-   `./configure.py` and enter the settings fresh.
-4. Make sure the model backend is reachable from there: `ollama pull <model>`
-   locally, or `./configure.py --set LLM_BASE_URL=http://gpu-box:11434` to use
-   an Ollama server elsewhere on your network.
-5. `sudo timedatectl set-timezone <Area/City>` then `./configure.py --schedule 10:00`.
-6. `./configure.py --test-llm && ./configure.py --test-email`
+Use either the old direct cron entries or the dashboard schedule for the same event to avoid duplicate editions. Existing `.env` and process environment settings serve as defaults. The initial AI event takes its sources, keywords, lookback, and SMTP availability from those defaults, and starts with its dashboard schedule disabled. Set the next schedule in the dashboard before retiring existing cron entries.
 
-That's it — no services, no ports, no database.
+## PDF and weekly skills
 
-## License
-MIT — see [LICENSE](LICENSE).
+Enable PDF archiving and optional email attachments in **Settings**. For AI events, enable the Sunday skills gap and set the path to your CV PDF, or use `cv.pdf` in the project folder. The existing skills commands remain available for viewing and tracking the report.
+
+```bash
+./venv/bin/python skills.py
+./venv/bin/python skills.py gaps
+./venv/bin/python skills.py learned "vLLM"
+```
+
+Settings, credentials, schedules, and archived HTML are stored under the private, gitignored `.briefing/` directory. Back up this directory to move the app to another machine. Keep your CV, `.env`, briefing PDFs, and AI skills history private as well.
+
+## Tests
+
+```bash
+./venv/bin/python -m unittest discover -s tests -v
+node --check web/app.js
+```
+
+MIT license. See [LICENSE](LICENSE).

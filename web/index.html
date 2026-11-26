@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6f2">
+  <title>Dispatch — News briefing</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <a class="brand" href="#events"><span aria-hidden="true" class="mark"><i></i><i></i><i></i></span>Dispatch</a>
+      <nav aria-label="Main navigation">
+        <a href="#events">Events</a><a href="#archive">Archive</a><a href="#settings">Settings</a>
+      </nav>
+    </header>
+    <main id="main">
+      <section id="events">
+        <header class="hero">
+          <div class="hero-lines" aria-hidden="true"></div>
+          <div class="hero-copy">
+            <p class="overline">NEWS BRIEFINGS</p>
+            <h1>Your briefing desk.</h1>
+            <p>Schedule the news you follow and read each edition here or in your inbox.</p>
+            <button class="button highlight" id="new-event">New event <span aria-hidden="true">+</span></button>
+          </div>
+        </header>
+        <div class="split">
+          <section aria-labelledby="events-title">
+            <div class="section-head"><h2 id="events-title">Briefing events</h2><span id="event-count" class="meta"></span></div>
+            <div id="event-list" class="stack"><p class="empty">Loading events…</p></div>
+          </section>
+          <section aria-labelledby="activity-title">
+            <div class="section-head"><h2 id="activity-title">Recent activity</h2><a href="#archive">View archive</a></div>
+            <div id="recent" class="panel activity"><p class="empty">Loading activity…</p></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="archive" hidden>
+        <header class="page-head"><div><p class="overline">PAST EDITIONS</p><h1>Briefing archive</h1></div>
+          <label class="filter">Filter by event<select id="archive-filter"><option value="">All events</option></select></label>
+        </header>
+        <div id="archive-list" class="panel activity"></div>
+      </section>
+
+      <section id="report" hidden>
+        <header class="page-head"><div><a href="#archive">Back to archive</a><h1 id="report-title">Briefing</h1></div>
+          <a class="button secondary" id="open-report" target="_blank" rel="noopener">Open in new tab</a>
+        </header>
+        <iframe id="report-frame" title="Briefing contents" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
+      </section>
+
+      <section id="settings" hidden>
+        <header class="page-head"><div><p class="overline">PREFERENCES</p><h1>Settings</h1></div></header>
+        <form id="settings-form" class="stack">
+          <section class="panel form-panel">
+            <h2>AI provider</h2>
+            <p id="provider-help" class="meta"></p>
+            <div id="provider-fields" class="fields"></div>
+          </section>
+          <section class="panel form-panel">
+            <h2>Email delivery</h2>
+            <p class="meta">Events with email enabled use these SMTP settings.</p>
+            <div id="email-fields" class="fields"></div>
+          </section>
+          <section class="panel form-panel">
+            <h2>Reports and skills</h2>
+            <div id="report-fields" class="fields"></div>
+          </section>
+          <details class="panel form-panel">
+            <summary>Advanced pipeline settings</summary>
+            <div id="advanced-fields" class="fields"></div>
+          </details>
+          <div class="actions"><button class="button primary" type="submit">Save settings</button></div>
+          <p class="form-error" id="settings-error" role="alert"></p>
+        </form>
+      </section>
+    </main>
+    <footer>Dispatch <span>News briefing desk</span></footer>
+  </div>
+
+  <dialog id="event-dialog" aria-labelledby="dialog-title">
+    <form id="event-form">
+      <header class="dialog-head"><h2 id="dialog-title">New event</h2><button type="button" class="icon close" aria-label="Close">×</button></header>
+      <div class="dialog-body fields">
+        <label class="wide" id="preset-label">Start from a preset
+          <select id="preset"><option value="">Custom</option><option value="ai">AI news</option><option value="politics">Politics</option><option value="trends">Latest trends</option></select>
+        </label>
+        <label>Name<input name="name" required maxlength="80" placeholder="Morning briefing"></label>
+        <label>Topic<input name="topic" required maxlength="180" placeholder="e.g. Global climate policy"></label>
+        <label class="wide">Source URLs <textarea name="sources" rows="3" maxlength="12000" placeholder="One feed or publisher URL per line"></textarea>
+        <span class="hint">Leave blank to use the bundled feeds for the AI topic.</span></label>
+        <label>Keywords<input name="keywords" maxlength="1000" placeholder="Optional, comma-separated"></label>
+        <label>Lookback in hours<input name="window" type="number" min="0" max="720" required><span class="hint">Use 0 to include older articles.</span></label>
+        <label>Time<input name="time" type="time" required></label>
+        <label>Time zone<input name="timezone" list="zones" required placeholder="Asia/Kolkata">
+          <datalist id="zones"><option value="UTC"><option value="Asia/Kolkata"><option value="America/New_York"><option value="America/Los_Angeles"><option value="Europe/London"><option value="Europe/Paris"><option value="Asia/Singapore"></datalist>
+        </label>
+        <fieldset class="wide"><legend>Days</legend><div id="weekdays" class="days"></div></fieldset>
+        <label class="check"><input name="enabled" type="checkbox"> Enable schedule</label>
+        <label class="check"><input name="email" type="checkbox"> Send by email</label>
+        <label class="check wide" id="weekly-label"><input name="weekly" type="checkbox"> Include the CV skills gap on Sundays</label>
+      </div>
+      <p class="form-error" id="event-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="button danger" id="delete-event" type="button">Delete event</button>
+        <button class="button secondary close" type="button">Cancel</button>
+        <button class="button primary" type="submit">Save event</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="delete-dialog" aria-labelledby="delete-title">
+    <form method="dialog" class="form-panel">
+      <h2 id="delete-title">Delete this event?</h2>
+      <p>Its schedule will be removed. Past briefings will stay in the archive.</p>
+      <div class="actions"><button class="button secondary" value="cancel" autofocus>Cancel</button>
+      <button class="button danger" value="delete">Delete event</button></div>
+    </form>
+  </dialog>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
