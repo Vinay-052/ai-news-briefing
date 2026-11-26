@@ -2,6 +2,21 @@
 
 Dispatch turns RSS feeds and publisher pages into scheduled briefings with linked citations. Read each edition in the web reader (filter by category, signal and audience, or search across every past edition), send it by email, or run the same pipeline unattended on an always-on computer.
 
+![The Latest briefing reader: a top-signal story with what happened, why it matters, a builder takeaway, a no-BS read, score bars and numbered source links](docs/screenshots/reader-light.png)
+
+## Screenshots
+
+Screenshots use sample data. The headlines and sources shown are illustrative.
+
+| | |
+| --- | --- |
+| ![Reader in dark mode](docs/screenshots/reader-dark.png) | ![Explore view searching every edition](docs/screenshots/explore.png) |
+| **Reader, dark theme.** Each story has scores, audiences and numbered citations. Switch between light, dark and system themes from the sidebar. | **Explore.** Filter every past edition by time window, event, category, signal, audience or keyword. |
+| ![Events and schedules with recent activity](docs/screenshots/events.png) | ![Event editor showing the full list of source URLs](docs/screenshots/event-sources.png) |
+| **Events and schedules.** Each event has its own schedule, sources, AI provider and delivery, with next-run times and live run status. | **Event editor.** The briefing reads every URL in the list. Add keeps the existing URLs, and × removes one. |
+| ![Add provider dialog with the model list loaded](docs/screenshots/provider-models.png) | ![Phone layout: reader and navigation drawer](docs/screenshots/mobile.png) |
+| **Providers.** Pick a provider, paste its key, choose a model from **Load models**, then **Save & test**. Hosted providers can't be saved without a key. | **On a phone.** The same reader with a slide-out menu. |
+
 ## Start the dashboard
 
 Requires Python 3.9+ on macOS or Linux.

@@ -82,7 +82,7 @@ function ago(seconds) {
   }
   return diff > 0 ? "in under a minute" : "just now";
 }
-function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+function plural(n, word) { return n + " " + word + (n === 1 ? "" : /(?:ch|sh|s|x)$/.test(word) ? "es" : "s"); }
 function reveal(node, index) {
   node.classList.add("reveal");
   node.style.setProperty("--i", index);
