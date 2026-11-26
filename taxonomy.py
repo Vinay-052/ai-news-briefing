@@ -30,6 +30,10 @@ CATEGORIES = [
     "Agents", "Research", "Business", "Policy",
 ]
 DEFAULT_CATEGORY = "Research"
+GENERAL_CATEGORIES = [
+    "Politics", "Policy", "World", "Business", "Technology", "Science",
+    "Culture", "Society", "Environment", "Other",
+]
 
 # --- Signal: single editorial-importance class ("All" is UI-only) ---
 SIGNALS = [
@@ -82,7 +86,9 @@ def _nearest(value: Any, options: List[str], cutoff: float = 0.6) -> Optional[st
     return match[0] if match else None
 
 
-def coerce_category(value: Any) -> str:
+def coerce_category(value: Any, *, general: bool = False) -> str:
+    if general:
+        return _nearest(value, GENERAL_CATEGORIES) or "Other"
     return _nearest(value, CATEGORIES) or DEFAULT_CATEGORY
 
 

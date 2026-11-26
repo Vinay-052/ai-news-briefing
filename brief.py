@@ -61,15 +61,15 @@ _FEED_VERSIONS = ("rss", "atom", "rdf")
 _TITLE_RATIO, _TITLE_RATIO_WEAK, _SUMMARY_RATIO, _JACCARD = 0.85, 0.72, 0.60, 0.5
 _UA = "Mozilla/5.0 (compatible; NewsBrief/1.0; +https://example.local)"
 
-_NEWS_ITEM_PROMPT = """You are an AI-news briefing analyst. Read the article below and classify + summarize it for a technical audience.
+_NEWS_ITEM_PROMPT = """{assignment}
 
 Return ONLY a single JSON object with EXACTLY these fields:
 {{
   "what_happened": "1-2 sentences stating the concrete news.",
   "why_it_matters": "1-2 sentences on significance / implications.",
-  "builder_takeaway": "1 sentence: what a developer or builder should note or do.",
+  "builder_takeaway": "1 sentence: {takeaway}",
   "no_bs_read": "1 sentence: blunt, hype-free assessment.",
-  "summary": "Neutral summary, 40 words or fewer.",
+  "summary": "Neutral summary, 40 words or fewer.",{relevance}
   "category": "one of: {categories}",
   "signal": "one of: {signals}",
   "audiences": ["zero or more of: {audiences}"],
@@ -117,16 +117,25 @@ def _host_is_public(host: str) -> bool:
 
 async def fetch_raw(client: httpx.AsyncClient, url: str, timeout: int = 15) -> dict:
     res = {"success": False, "status": 0, "bytes": b"", "text": "", "content_type": "", "error": ""}
-    host = urlparse(url).hostname
-    if not host or not _host_is_public(host):
-        res["error"] = "non-public host"
-        return res
     try:
-        r = await client.get(url, timeout=timeout, headers={
-            "User-Agent": _UA,
-            "Accept": "application/rss+xml,application/atom+xml,application/xml,text/html;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.7",
-        })
+        for _ in range(11):
+            parts = urlparse(url)
+            if (parts.scheme not in ("http", "https") or not parts.hostname or parts.username
+                    or parts.password or not _host_is_public(parts.hostname)):
+                res["error"] = "source must use HTTP(S) on a public host"
+                return res
+            r = await client.get(url, timeout=timeout, follow_redirects=False, headers={
+                "User-Agent": _UA,
+                "Accept": "application/rss+xml,application/atom+xml,application/xml,text/html;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.7",
+            })
+            location = r.headers.get("location")
+            if not r.is_redirect or not location:
+                break
+            url = urljoin(url, location)
+        else:
+            res["error"] = "too many redirects"
+            return res
     except Exception as e:
         res["error"] = f"{type(e).__name__}: {e}"
         return res
@@ -240,17 +249,15 @@ def _omit_temperature(model: str) -> bool:
 # One GPU serves one request at a time, so LLM calls get their own gate,
 # independent of the (network-bound) article-fetch concurrency. Keyed by loop:
 # brief.py --weekly runs two asyncio.run() loops in one process.
-_LLM_SEMS: dict = {}
 # Set when the server rejects the `think` field (models without thinking).
-_THINK_UNSUPPORTED = False
+_THINK_UNSUPPORTED = set()
 
 
 def _llm_sem() -> asyncio.Semaphore:
     loop = asyncio.get_running_loop()
-    sem = _LLM_SEMS.get(loop)
-    if sem is None:
-        sem = _LLM_SEMS[loop] = asyncio.Semaphore(max(1, CONFIG.LLM_CONCURRENCY))
-    return sem
+    if not hasattr(loop, "_briefing_llm_sem"):
+        loop._briefing_llm_sem = asyncio.Semaphore(max(1, CONFIG.LLM_CONCURRENCY))
+    return loop._briefing_llm_sem
 
 
 def _fit_num_ctx(prompt: str, max_tokens: int) -> int:
@@ -289,7 +296,7 @@ def _ollama_request(prompt: str, max_tokens: int) -> tuple:
     if not CONFIG.OLLAMA_CLOUD:
         # Only a server you run has weights to hold in memory.
         payload["keep_alive"] = CONFIG.LLM_KEEP_ALIVE
-    if not _THINK_UNSUPPORTED:
+    if (CONFIG.LLM_BASE_URL, CONFIG.LLM_MODEL) not in _THINK_UNSUPPORTED:
         payload["think"] = CONFIG.LLM_THINK
     headers = {"Content-Type": "application/json"}
     if CONFIG.LLM_API_KEY:
@@ -301,12 +308,22 @@ def _ollama_request(prompt: str, max_tokens: int) -> tuple:
 def _openai_request(prompt: str, max_tokens: int) -> tuple:
     payload = {"model": CONFIG.LLM_MODEL, "max_tokens": max_tokens,
                "messages": [{"role": "user", "content": prompt}]}
-    if not _omit_temperature(CONFIG.LLM_MODEL):
+    if CONFIG.LLM_MODEL.lower().startswith(("gpt-5", "gpt-6", "o1", "o3", "o4")):
+        payload["max_completion_tokens"] = payload.pop("max_tokens")
+    elif not _omit_temperature(CONFIG.LLM_MODEL):
         payload["temperature"] = 0.2
     headers = {"Content-Type": "application/json"}
     if CONFIG.LLM_API_KEY:
         headers["Authorization"] = f"Bearer {CONFIG.LLM_API_KEY}"
     return CONFIG.LLM_BASE_URL.rstrip("/") + "/chat/completions", payload, headers
+
+
+def _responses_request(prompt: str, max_tokens: int) -> tuple:
+    return (
+        CONFIG.LLM_BASE_URL.rstrip("/") + "/responses",
+        {"model": CONFIG.LLM_MODEL, "input": prompt, "max_output_tokens": max_tokens, "store": False},
+        {"Authorization": f"Bearer {CONFIG.LLM_API_KEY}"},
+    )
 
 
 async def llm_call(client: httpx.AsyncClient, prompt: str, timeout: int = 0,
@@ -320,16 +337,17 @@ async def llm_call(client: httpx.AsyncClient, prompt: str, timeout: int = 0,
     exponential backoff with jitter. `max_tokens` matters for long structured
     replies (the skills-gap JSON needs far more room than one summary).
     """
-    global _THINK_UNSUPPORTED
     ollama = CONFIG.PROVIDER == "ollama"
+    responses = CONFIG.PROVIDER == "chatgpt"
+    request = _ollama_request if ollama else _responses_request if responses else _openai_request
+    model_key = (CONFIG.LLM_BASE_URL, CONFIG.LLM_MODEL)
     timeout = timeout or CONFIG.LLM_TIMEOUT
     last_err = ""
     for attempt in range(CONFIG.LLM_MAX_RETRIES + 1):
-        url, payload, headers = (_ollama_request(prompt, max_tokens) if ollama
-                                 else _openai_request(prompt, max_tokens))
+        url, payload, headers = request(prompt, max_tokens)
         try:
             async with _llm_sem():
-                r = await client.post(url, json=payload, timeout=timeout, headers=headers)
+                r = await client.post(url, json=payload, timeout=timeout, headers=headers, follow_redirects=False)
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
         else:
@@ -337,13 +355,20 @@ async def llm_call(client: httpx.AsyncClient, prompt: str, timeout: int = 0,
                 data = r.json()
                 if ollama:
                     return ((data.get("message") or {}).get("content") or "").strip()
+                if responses:
+                    if data.get("status") != "completed":
+                        raise RuntimeError("OpenAI returned an incomplete response")
+                    return "\n".join(
+                        part["text"] for item in data.get("output", []) if item.get("type") == "message"
+                        for part in item.get("content", []) if part.get("type") == "output_text"
+                    ).strip()
                 return (data["choices"][0]["message"]["content"] or "").strip()
             last_err = f"HTTP {r.status_code}"
             # A model with no thinking mode rejects the field outright; drop it
             # and retry immediately instead of burning the backoff budget.
-            if (ollama and r.status_code == 400 and not _THINK_UNSUPPORTED
+            if (ollama and r.status_code == 400 and model_key not in _THINK_UNSUPPORTED
                     and "think" in r.text.lower()):
-                _THINK_UNSUPPORTED = True
+                _THINK_UNSUPPORTED.add(model_key)
                 log.debug("model %s has no thinking mode — dropping `think`", CONFIG.LLM_MODEL)
                 continue
             if r.status_code not in (408, 409, 425, 429, 500, 502, 503, 504):
@@ -608,17 +633,31 @@ async def _fetch_extract_summarize(client, entry, errors):
         para = cut.rfind("\n\n")
         content = cut[:para] if para > CONFIG.MAX_CONTENT_CHARS * 0.8 else cut
 
+    ai = CONFIG.TOPIC == "ai"
+    categories = tax.CATEGORIES if ai else tax.GENERAL_CATEGORIES
     prompt = _NEWS_ITEM_PROMPT.format(
-        categories=", ".join(tax.CATEGORIES), signals=", ".join(tax.SIGNALS),
+        relevance="" if ai else '\n  "relevant": true if the article is directly relevant to the topic, otherwise false,',
+        assignment=("You are an AI-news briefing analyst. Classify and summarize the article for a technical audience."
+                    if ai else f"You are a news analyst covering {CONFIG.TOPIC}. Summarize the article neutrally "
+                    "for a general audience. Distinguish reported facts from claims and attribute claims. "
+                    "Use the closest applicable classification, with no tech framing unless relevant."),
+        takeaway="what a developer or builder should note or do." if ai else "what readers should watch next.",
+        categories=", ".join(categories), signals=", ".join(tax.SIGNALS),
         audiences=", ".join(tax.AUDIENCES), status_tags=", ".join(tax.STATUS_TAGS),
         title=entry.get("title") or "(none)", source=entry.get("source") or "", url=url, content=content)
     try:
         resp = await llm_call(client, prompt)
     except Exception as e:
+        log.warning("Model could not summarize %s: %s", url, e)
         errors.append({"url": url, "status": "llm_error", "error": str(e)})
         return None
 
-    parsed = _parse_json_object(resp) or {}
+    parsed = _parse_json_object(resp)
+    if not isinstance(parsed, dict) or not parsed:
+        errors.append({"url": url, "status": "summary_error", "error": "Model returned no structured summary"})
+        return None
+    if not ai and parsed.get("relevant") is False:
+        return None
     scores = tax.coerce_scores(parsed.get("scores"))
     scores["overall"] = tax.compute_overall(scores)
     status_tags = tax.coerce_status_tags(parsed.get("status_tags"))
@@ -633,7 +672,7 @@ async def _fetch_extract_summarize(client, entry, errors):
         "link": url, "url": url,
         "timestamp": entry.get("published") or page.get("published"),
         "og_image": page.get("og_image", ""), "extracted_by": page.get("extracted_by", ""),
-        "also_seen_in": [], "category": tax.coerce_category(parsed.get("category")),
+        "also_seen_in": [], "category": tax.coerce_category(parsed.get("category"), general=not ai),
         "signal": tax.coerce_signal(parsed.get("signal")), "audiences": tax.coerce_audiences(parsed.get("audiences")),
         "status_tags": status_tags, "scores": scores, "writeup": writeup, "summary": summary,
         "run_status": "new", "top_signal": False,
@@ -747,6 +786,9 @@ async def run(sources):
 
         gathered = await asyncio.gather(*[bounded(e) for e in uniq], return_exceptions=True)
 
+    for entry, result in zip(uniq, gathered):
+        if isinstance(result, Exception):
+            errors.append({"url": entry["link"], "status": "summary_error", "error": str(result)})
     items = [g for g in gathered if g and not isinstance(g, Exception)]
     items = _rank(_keyword_filter(_dedup(items)))
     return {"articles": items, "top_signal_link": items[0]["link"] if items else None,
@@ -758,6 +800,8 @@ async def run(sources):
 def _html_to_text(html: str) -> str:
     import html as _h
     t = re.sub(r"<(style|script)[\s\S]*?</\1>", " ", html, flags=re.I)
+    t = re.sub(r'<a\b[^>]*\bhref="([^"]+)"[^>]*>([\s\S]*?)</a>',
+               lambda m: f"{m[2]} ({m[1]})", t, flags=re.I)
     t = re.sub(r"<br\s*/?>", "\n", t, flags=re.I)
     t = re.sub(r"</(p|div|tr|li|h[1-6]|table)>", "\n", t, flags=re.I)
     t = re.sub(r"<[^>]+>", "", t)
@@ -820,7 +864,7 @@ async def _skills_report(news: dict):
         try:
             await sg.ensure_cv_skills(state, cv, llm, log=log.info)
         except (FileNotFoundError, ValueError) as e:
-            log.error("skills: CV unusable (%s) — set CV_PATH in .env", e)
+            log.error("skills: CV unusable (%s) — check the CV path in Settings", e)
             return None
         report = await sg.analyze(state, articles, llm,
                                  max_gaps=CONFIG.MAX_SKILL_GAPS, log=log.info)
@@ -830,71 +874,77 @@ async def _skills_report(news: dict):
     return report
 
 
-def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    dry = "--dry-run" in sys.argv
-    weekly = "--weekly" in sys.argv
+def check_configuration(email=False):
     if not (CONFIG.LLM_BASE_URL and CONFIG.LLM_MODEL):
-        log.error("LLM_BASE_URL / LLM_MODEL not configured in .env")
-        sys.exit(2)
-    if CONFIG.PROVIDER == "openai" and not CONFIG.LLM_API_KEY:
-        log.error("LLM_API_KEY not configured in .env (required for provider=openai)")
-        sys.exit(2)
-    log.info("LLM: %s %s via %s (ctx %d, %d concurrent, %ds timeout)",
-             CONFIG.PROVIDER, CONFIG.LLM_MODEL, CONFIG.LLM_BASE_URL,
-             CONFIG.LLM_NUM_CTX, CONFIG.LLM_CONCURRENCY, CONFIG.LLM_TIMEOUT)
+        raise ValueError("Set the model and endpoint in Settings.")
+    if (CONFIG.PROVIDER in ("chatgpt", "opencode") or CONFIG.OLLAMA_CLOUD
+            or CONFIG.PROVIDER == "openai" and CONFIG.REQUIRE_API_KEY) and not CONFIG.LLM_API_KEY:
+        raise ValueError("Set the provider API key in Settings.")
+    if email and not (CONFIG.SMTP_HOST and CONFIG.MAIL_FROM and CONFIG.MAIL_TO):
+        raise ValueError("Set the SMTP host, sender, and recipients in Settings.")
+
+
+def build_briefing(title, *, weekly=False, strict=False, when=None):
+    check_configuration()
     if CONFIG.PROVIDER == "ollama":
         problem = preflight_ollama()
         if problem:
-            log.error("ollama: %s", problem)
-            sys.exit(3)
+            raise RuntimeError(problem)
 
     news = asyncio.run(run(_sources()))
+    if strict and not news["articles"] and any(
+        error["status"] in ("llm_error", "summary_error") for error in news["errors"]
+    ):
+        raise RuntimeError("No articles could be summarized. Check the AI provider and server log.")
 
-    # Persist this run so the weekly skills analysis has a window of news.
-    import skills_gap as sg
-    try:
-        sg.append_history(news)
-        sg.prune_history(CONFIG.HISTORY_KEEP_DAYS)
-    except OSError as e:
-        log.warning("could not write history: %s", e)
+    if CONFIG.TOPIC == "ai":
+        import skills_gap as sg
+        try:
+            sg.append_history(news)
+            sg.prune_history(CONFIG.HISTORY_KEEP_DAYS)
+        except OSError as exc:
+            log.warning("could not write history: %s", exc)
 
     skills = asyncio.run(_skills_report(news)) if weekly else None
+    html = render_news_html(news, title=title, detail_limit=CONFIG.DETAIL_LIMIT,
+                            skills=skills, ai=CONFIG.TOPIC == "ai", when=when)
+    return news, skills, html
 
-    html = render_news_html(news, detail_limit=CONFIG.DETAIL_LIMIT, skills=skills)
-    stamp = datetime.now()
-    subject = f"AI News Briefing — {stamp:%b %d, %Y}" + (" + skills gap" if skills else "")
 
-    # Always keep a dated PDF copy alongside the script.
-    pdf_path = None
-    if CONFIG.SAVE_PDF:
-        try:
-            from pdf_report import render_pdf, timestamped_name
-            pdf_dir = Path(CONFIG.PDF_DIR) if CONFIG.PDF_DIR else HERE
-            if not pdf_dir.is_absolute():
-                pdf_dir = HERE / pdf_dir
-            pdf_dir.mkdir(parents=True, exist_ok=True)
-            pdf_path = render_pdf(news, pdf_dir / timestamped_name(when=stamp),
-                                  detail_limit=CONFIG.DETAIL_LIMIT, skills=skills)
-            log.info("saved PDF: %s", pdf_path)
-        except Exception as e:  # never lose the email over a PDF problem
-            log.error("PDF generation failed (%s) — continuing", e)
+def save_pdf(news, skills, title, stamp, run_id=None):
+    if not CONFIG.SAVE_PDF:
+        return None
+    try:
+        from pdf_report import render_pdf, timestamped_name
+        pdf_dir = Path(CONFIG.PDF_DIR) if CONFIG.PDF_DIR else HERE
+        if not pdf_dir.is_absolute():
+            pdf_dir = HERE / pdf_dir
+        pdf_dir.mkdir(parents=True, exist_ok=True)
+        prefix = re.sub(r"[^\w-]+", "_", title).strip("_") or "Briefing"
+        name = timestamped_name(prefix=prefix, when=stamp)
+        if run_id is not None:
+            name = f"{name[:-4]}_{run_id}.pdf"
+        path = render_pdf(news, pdf_dir / name, title=title, detail_limit=CONFIG.DETAIL_LIMIT, skills=skills)
+        log.info("saved PDF: %s", path)
+        return path
+    except Exception as exc:
+        log.error("PDF generation failed (%s) — continuing", exc)
+        return None
 
-    if dry:
-        out = HERE / "last_briefing.html"
-        out.write_text(html, encoding="utf-8")
-        log.info("dry-run: wrote %s (%d articles, %d errors)%s",
-                 out, len(news["articles"]), len(news["errors"]),
-                 f"; pdf {pdf_path.name}" if pdf_path else "")
-        return
-    if not (CONFIG.SMTP_HOST and CONFIG.MAIL_TO):
-        log.error("SMTP_HOST / MAIL_TO not configured in .env")
-        sys.exit(2)
-    send_email(html, subject, attach=pdf_path if CONFIG.ATTACH_PDF else None)
-    log.info("Sent briefing: %d articles from %d sources to %s%s",
-             len(news["articles"]), len(news["input_sources"]), CONFIG.MAIL_TO,
-             " (with skills gap)" if skills else "")
+
+def main():
+    import argparse
+    from briefing_store import Store, run_headless
+
+    parser = argparse.ArgumentParser(description="Run a briefing using settings from the web dashboard.")
+    parser.add_argument("--dry-run", action="store_true", help="build and archive without email")
+    parser.add_argument("--weekly", action="store_true", help="include the AI skills gap")
+    parser.add_argument("--event", type=int, default=1, help="run a specific event by ID")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    return run_headless(Store(), args.event, dry=args.dry_run, weekly=args.weekly)
 
 
 if __name__ == "__main__":
-    main()
+    sys.modules["brief"] = sys.modules[__name__]
+    sys.exit(main())

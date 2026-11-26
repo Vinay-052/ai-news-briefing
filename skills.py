@@ -48,9 +48,12 @@ async def _with_llm(coro_factory):
 
 
 def _require_llm() -> bool:
-    if not (CONFIG.LLM_BASE_URL and CONFIG.LLM_MODEL) or (
-            CONFIG.PROVIDER == "openai" and not CONFIG.LLM_API_KEY):
-        print("!! LLM not configured. Run:  ./configure.py --llm")
+    from brief import check_configuration
+
+    try:
+        check_configuration()
+    except ValueError as exc:
+        print(exc)
         return False
     return True
 
@@ -114,7 +117,7 @@ def cmd_gaps(state: dict, days: int, send: bool) -> int:
             await sg.ensure_cv_skills(state, _cv_path(), llm, log=lambda m: print(f"  {m}"))
         except (FileNotFoundError, ValueError) as e:
             print(f"!! CV: {e}")
-            print(f"   Point at it with: ./configure.py --set CV_PATH=/path/to/cv.pdf")
+            print(f"   Set the CV PDF path in the web dashboard under Settings.")
             return None
         return await sg.analyze(state, articles, llm,
                                 max_gaps=CONFIG.MAX_SKILL_GAPS, log=lambda m: print(f"  {m}"))
