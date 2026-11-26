@@ -2,125 +2,265 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f6f2">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f5f6f2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e1411" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="light dark">
   <title>Dispatch — News briefing</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <div class="shell">
-    <header class="masthead">
-      <a class="brand" href="#events"><span aria-hidden="true" class="mark"><i></i><i></i><i></i></span>Dispatch</a>
+  <div class="app">
+    <aside class="sidebar" id="sidebar" aria-label="Sidebar">
+      <div class="sidebar-head">
+        <a class="brand" href="#briefing"><span aria-hidden="true" class="mark"><i></i><i></i><i></i></span><span>Dispatch<small>News briefing desk</small></span></a>
+        <button class="icon only-mobile" type="button" id="close-nav" aria-label="Close menu">×</button>
+      </div>
       <nav aria-label="Main navigation">
-        <a href="#events">Events</a><a href="#archive">Archive</a><a href="#settings">Settings</a>
+        <p class="nav-label">Read</p>
+        <a href="#briefing" data-view="briefing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM8 9h8M8 13h8M8 17h5"/></svg>Latest briefing</a>
+        <a href="#explore" data-view="explore"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6 7v6l-4 2v-8z"/></svg>Explore</a>
+        <a href="#archive" data-view="archive"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v5l3 2M3.5 12a8.5 8.5 0 1 0 2.5-6M3 4v4h4"/></svg>History</a>
+        <p class="nav-label">Manage</p>
+        <a href="#events" data-view="events"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v14H4zM4 10h16M8 3v5M16 3v5"/></svg>Events &amp; schedules</a>
+        <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19 12l2-1-2-4-2 1-2-1-1-2H10L9 7 7 8 5 7 3 11l2 1v0l-2 1 2 4 2-1 2 1 1 2h4l1-2 2-1 2 1 2-4z"/></svg>Settings</a>
       </nav>
-    </header>
-    <main id="main">
-      <section id="events">
-        <header class="hero">
-          <div class="hero-lines" aria-hidden="true"></div>
-          <div class="hero-copy">
-            <p class="overline">NEWS BRIEFINGS</p>
-            <h1>Your briefing desk.</h1>
-            <p>Schedule the news you follow and read each edition here or in your inbox.</p>
-            <button class="button highlight" id="new-event">New event <span aria-hidden="true">+</span></button>
-          </div>
-        </header>
-        <div class="split">
-          <section aria-labelledby="events-title">
-            <div class="section-head"><h2 id="events-title">Briefing events</h2><span id="event-count" class="meta"></span></div>
-            <div id="event-list" class="stack"><p class="empty">Loading events…</p></div>
-          </section>
-          <section aria-labelledby="activity-title">
-            <div class="section-head"><h2 id="activity-title">Recent activity</h2><a href="#archive">View archive</a></div>
-            <div id="recent" class="panel activity"><p class="empty">Loading activity…</p></div>
-          </section>
+      <div class="sidebar-foot">
+        <div class="cadence" id="cadence">
+          <p class="nav-label">Next briefing</p>
+          <strong id="cadence-name">—</strong>
+          <span id="cadence-when" class="meta">No schedules enabled</span>
         </div>
-      </section>
+        <div class="theme" role="radiogroup" aria-label="Theme">
+          <button type="button" role="radio" data-theme-choice="system" aria-label="Match system theme"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v11H3zM8 20h8M12 16v4"/></svg></button>
+          <button type="button" role="radio" data-theme-choice="light" aria-label="Light theme"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
+          <button type="button" role="radio" data-theme-choice="dark" aria-label="Dark theme"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg></button>
+        </div>
+      </div>
+    </aside>
+    <div class="scrim" id="scrim" hidden></div>
 
-      <section id="archive" hidden>
-        <header class="page-head"><div><p class="overline">PAST EDITIONS</p><h1>Briefing archive</h1></div>
-          <label class="filter">Filter by event<select id="archive-filter"><option value="">All events</option></select></label>
-        </header>
-        <div id="archive-list" class="panel activity"></div>
-      </section>
+    <div class="content">
+      <header class="topbar">
+        <button class="icon" type="button" id="open-nav" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+        <a class="brand" href="#briefing"><span aria-hidden="true" class="mark"><i></i><i></i><i></i></span>Dispatch</a>
+        <span class="topbar-spacer"></span>
+      </header>
 
-      <section id="report" hidden>
-        <header class="page-head"><div><a href="#archive">Back to archive</a><h1 id="report-title">Briefing</h1></div>
-          <a class="button secondary" id="open-report" target="_blank" rel="noopener">Open in new tab</a>
-        </header>
-        <iframe id="report-frame" title="Briefing contents" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
-      </section>
+      <div class="banner" id="setup-banner" hidden>
+        <span class="banner-dot" aria-hidden="true"></span>
+        <p><strong>Finish setup.</strong> <span id="setup-text"></span></p>
+        <a class="button highlight small" href="#settings">Open settings</a>
+      </div>
 
-      <section id="settings" hidden>
-        <header class="page-head"><div><p class="overline">PREFERENCES</p><h1>Settings</h1></div></header>
-        <form id="settings-form" class="stack">
-          <section class="panel form-panel">
-            <h2>AI provider</h2>
-            <p id="provider-help" class="meta"></p>
-            <div id="provider-fields" class="fields"></div>
-          </section>
-          <section class="panel form-panel">
-            <h2>Email delivery</h2>
-            <p class="meta">Events with email enabled use these SMTP settings.</p>
-            <div id="email-fields" class="fields"></div>
-          </section>
-          <section class="panel form-panel">
-            <h2>Reports and skills</h2>
-            <div id="report-fields" class="fields"></div>
-          </section>
-          <details class="panel form-panel">
-            <summary>Advanced pipeline settings</summary>
-            <div id="advanced-fields" class="fields"></div>
-          </details>
-          <div class="actions"><button class="button primary" type="submit">Save settings</button></div>
-          <p class="form-error" id="settings-error" role="alert"></p>
-        </form>
-      </section>
-    </main>
-    <footer>Dispatch <span>News briefing desk</span></footer>
+      <main id="main">
+        <!-- Latest briefing: the in-app reader -->
+        <section class="view" id="view-briefing" aria-labelledby="briefing-title">
+          <header class="page-head">
+            <div>
+              <p class="overline" id="briefing-overline">Briefing</p>
+              <h1 id="briefing-title">Latest briefing</h1>
+              <p class="lede" id="briefing-lede"></p>
+            </div>
+            <div class="head-actions">
+              <label class="compact-select">Edition<select id="edition-select"></select></label>
+              <button class="button primary" type="button" id="briefing-run"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></svg>Refresh now</button>
+            </div>
+          </header>
+          <div class="toolbar" id="briefing-toolbar" hidden>
+            <label>Format<select id="f-format"><option value="full">Full briefing</option><option value="quick">Quick scan</option><option value="headlines">Headlines</option></select></label>
+            <label>Category<select id="f-category"></select></label>
+            <label>Signal<select id="f-signal"></select></label>
+            <label>Audience<select id="f-audience"></select></label>
+            <label>Sort<select id="f-sort"><option value="score">Top score</option><option value="new">Newest</option></select></label>
+            <label class="search">Search<input id="f-search" type="search" placeholder="Filter headlines…" autocomplete="off"></label>
+          </div>
+          <div class="statline" id="briefing-stats"></div>
+          <div id="briefing-body" class="reader"></div>
+          <div class="edition-actions" id="edition-actions" hidden>
+            <a class="button secondary" id="email-layout" href="#">View email layout</a>
+            <button class="button secondary" type="button" id="email-edition">Email this edition</button>
+          </div>
+        </section>
+
+        <!-- Explore across editions -->
+        <section class="view" id="view-explore" aria-labelledby="explore-title" hidden>
+          <header class="page-head">
+            <div>
+              <p class="overline">Cross-briefing search</p>
+              <h1 id="explore-title">Explore updates</h1>
+              <p class="lede">Filter every edition in your history by time window, event, category, signal, and audience.</p>
+            </div>
+          </header>
+          <div class="toolbar">
+            <label>Window<select id="x-window"><option value="24">Last 24 hours</option><option value="168" selected>Last 7 days</option><option value="720">Last 30 days</option><option value="">All time</option></select></label>
+            <label>Event<select id="x-event"></select></label>
+            <label>Category<select id="x-category"></select></label>
+            <label>Signal<select id="x-signal"></select></label>
+            <label>Audience<select id="x-audience"></select></label>
+            <label class="search">Search<input id="x-search" type="search" placeholder="Search headlines and summaries…" autocomplete="off"></label>
+          </div>
+          <div class="statline" id="explore-stats"></div>
+          <div id="explore-body" class="reader"></div>
+        </section>
+
+        <!-- History -->
+        <section class="view" id="view-archive" aria-labelledby="archive-title" hidden>
+          <header class="page-head">
+            <div><p class="overline">Past editions</p><h1 id="archive-title">History</h1></div>
+            <label class="compact-select">Event<select id="archive-filter"><option value="">All events</option></select></label>
+          </header>
+          <div id="archive-list" class="panel activity"></div>
+        </section>
+
+        <!-- Email-layout view of one edition -->
+        <section class="view" id="view-report" aria-labelledby="report-title" hidden>
+          <header class="page-head">
+            <div><a class="back" id="report-back" href="#archive">← Back to the reader</a><h1 id="report-title">Briefing</h1><p class="lede">Exactly what the email looks like.</p></div>
+            <a class="button secondary" id="open-report" target="_blank" rel="noopener">Open in new tab ↗</a>
+          </header>
+          <iframe id="report-frame" title="Briefing email layout" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
+        </section>
+
+        <!-- Events -->
+        <section class="view" id="view-events" aria-labelledby="events-title" hidden>
+          <header class="hero">
+            <div class="hero-lines" aria-hidden="true"></div>
+            <div class="hero-copy">
+              <p class="overline">News briefings</p>
+              <h1 id="events-title">Your briefing desk.</h1>
+              <p>Each event is its own briefing: AI news, politics, trends, or anything with a feed. Give it sources, a schedule and a model, then read it here or in your inbox.</p>
+              <button class="button highlight" type="button" id="new-event">New event <span aria-hidden="true">+</span></button>
+            </div>
+          </header>
+          <div class="split">
+            <section aria-labelledby="events-list-title">
+              <div class="section-head"><h2 id="events-list-title">Briefing events</h2><span id="event-count" class="meta"></span></div>
+              <div id="event-list" class="stack"></div>
+            </section>
+            <section aria-labelledby="activity-title">
+              <div class="section-head"><h2 id="activity-title">Recent activity</h2><a href="#archive">View history</a></div>
+              <div id="recent" class="panel activity"></div>
+            </section>
+          </div>
+        </section>
+
+        <!-- Settings -->
+        <section class="view" id="view-settings" aria-labelledby="settings-title" hidden>
+          <header class="page-head"><div><p class="overline">Preferences</p><h1 id="settings-title">Settings</h1>
+            <p class="lede">Everything the briefings need is configured here. Nothing has to be set from the command line.</p></div></header>
+          <form id="settings-form" class="stack" novalidate>
+            <section class="panel form-panel">
+              <div class="panel-head"><div><h2>Default AI provider</h2><p id="provider-help" class="meta"></p></div>
+                <button class="button secondary" type="button" id="test-default">Save &amp; test</button></div>
+              <div id="provider-fields" class="fields"></div>
+              <p class="test-result" id="default-test" role="status"></p>
+            </section>
+            <section class="panel form-panel">
+              <div class="panel-head"><div><h2>More providers</h2><p class="meta">Save extra models, such as ChatGPT, Claude or OpenCode, and pick one per event.</p></div>
+                <button class="button secondary" type="button" id="add-provider">Add provider +</button></div>
+              <div id="provider-list" class="provider-list"></div>
+            </section>
+            <section class="panel form-panel">
+              <h2>Email delivery</h2>
+              <p class="meta">Events with email turned on use these SMTP settings.</p>
+              <div id="email-fields" class="fields"></div>
+            </section>
+            <section class="panel form-panel">
+              <h2>Reports and skills</h2>
+              <div id="report-fields" class="fields"></div>
+            </section>
+            <details class="panel form-panel">
+              <summary>Advanced pipeline settings</summary>
+              <div id="advanced-fields" class="fields"></div>
+            </details>
+            <div class="savebar"><p class="form-error" id="settings-error" role="alert"></p><button class="button primary" type="submit">Save settings</button></div>
+          </form>
+        </section>
+      </main>
+      <footer>Dispatch <span>Briefings with linked sources</span></footer>
+    </div>
   </div>
 
   <dialog id="event-dialog" aria-labelledby="dialog-title">
     <form id="event-form">
       <header class="dialog-head"><h2 id="dialog-title">New event</h2><button type="button" class="icon close" aria-label="Close">×</button></header>
       <div class="dialog-body fields">
-        <label class="wide" id="preset-label">Start from a preset
-          <select id="preset"><option value="">Custom</option><option value="ai">AI news</option><option value="politics">Politics</option><option value="trends">Latest trends</option></select>
-        </label>
+        <div class="wide preset-row" id="preset-label" role="group" aria-label="Start from a preset">
+          <button type="button" class="preset" data-preset="ai"><b>AI news</b><span>Labs, tools, research</span></button>
+          <button type="button" class="preset" data-preset="politics"><b>Politics</b><span>Policy and world news</span></button>
+          <button type="button" class="preset" data-preset="trends"><b>Latest trends</b><span>Tech, business, culture</span></button>
+          <button type="button" class="preset" data-preset=""><b>Custom</b><span>Your own feeds</span></button>
+        </div>
         <label>Name<input name="name" required maxlength="80" placeholder="Morning briefing"></label>
-        <label>Topic<input name="topic" required maxlength="180" placeholder="e.g. Global climate policy"></label>
-        <label class="wide">Source URLs <textarea name="sources" rows="3" maxlength="12000" placeholder="One feed or publisher URL per line"></textarea>
-        <span class="hint">Leave blank to use the bundled feeds for the AI topic.</span></label>
+        <label>Topic<input name="topic" required maxlength="180" placeholder="e.g. Global climate policy"><span class="hint">Use “ai” for the AI analyst format.</span></label>
+        <fieldset class="wide source-editor" aria-describedby="source-help">
+          <legend>News sources <span class="meta" id="source-count"></span></legend>
+          <p class="hint" id="source-help">This briefing reads <strong>every URL in this list</strong>, and nothing else. Adding a URL keeps the ones already here. Use × to remove one.</p>
+          <ul class="source-list" id="source-list" aria-label="Source URLs"></ul>
+          <div class="source-add">
+            <input id="source-input" type="url" inputmode="url" placeholder="Paste an RSS feed or news page URL" aria-label="New source URL">
+            <button type="button" class="button secondary" id="source-add">Add</button>
+          </div>
+          <p class="hint">Paste several URLs at once, one per line or separated by commas. <button type="button" class="linkish" id="source-restore" hidden>Add the starter AI sources back</button></p>
+          <textarea name="sources" id="source-urls" hidden></textarea>
+        </fieldset>
+        <label>AI provider<select name="provider" id="event-provider"></select></label>
         <label>Keywords<input name="keywords" maxlength="1000" placeholder="Optional, comma-separated"></label>
         <label>Lookback in hours<input name="window" type="number" min="0" max="720" required><span class="hint">Use 0 to include older articles.</span></label>
         <label>Time<input name="time" type="time" required></label>
-        <label>Time zone<input name="timezone" list="zones" required placeholder="Asia/Kolkata">
-          <datalist id="zones"><option value="UTC"><option value="Asia/Kolkata"><option value="America/New_York"><option value="America/Los_Angeles"><option value="Europe/London"><option value="Europe/Paris"><option value="Asia/Singapore"></datalist>
-        </label>
+        <label class="wide">Time zone<input name="timezone" list="zones" required placeholder="Asia/Kolkata"></label>
+        <datalist id="zones"></datalist>
         <fieldset class="wide"><legend>Days</legend><div id="weekdays" class="days"></div></fieldset>
-        <label class="check"><input name="enabled" type="checkbox"> Enable schedule</label>
-        <label class="check"><input name="email" type="checkbox"> Send by email</label>
-        <label class="check wide" id="weekly-label"><input name="weekly" type="checkbox"> Include the CV skills gap on Sundays</label>
+        <label class="check switch"><input name="enabled" type="checkbox"><span></span> Run on this schedule</label>
+        <label class="check switch"><input name="email" type="checkbox"><span></span> Send by email</label>
+        <label class="check switch wide" id="weekly-label"><input name="weekly" type="checkbox"><span></span> Include the CV skills gap on Sundays</label>
       </div>
       <p class="form-error" id="event-error" role="alert"></p>
       <div class="dialog-actions">
-        <button class="button danger" id="delete-event" type="button">Delete event</button>
+        <button class="button danger" id="delete-event" type="button">Delete</button>
         <button class="button secondary close" type="button">Cancel</button>
         <button class="button primary" type="submit">Save event</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="delete-dialog" aria-labelledby="delete-title">
-    <form method="dialog" class="form-panel">
-      <h2 id="delete-title">Delete this event?</h2>
-      <p>Its schedule will be removed. Past briefings will stay in the archive.</p>
-      <div class="actions"><button class="button secondary" value="cancel" autofocus>Cancel</button>
-      <button class="button danger" value="delete">Delete event</button></div>
+  <dialog id="provider-dialog" aria-labelledby="provider-title">
+    <form id="provider-form">
+      <header class="dialog-head"><h2 id="provider-title">Add provider</h2><button type="button" class="icon close" aria-label="Close">×</button></header>
+      <div class="dialog-body fields">
+        <label class="wide">Display name<input name="name" required maxlength="60" placeholder="e.g. ChatGPT for politics"></label>
+        <label>Provider<select name="LLM_PROVIDER" id="provider-type"></select></label>
+        <label>API base URL<input name="LLM_BASE_URL" type="url" required></label>
+        <label class="wide">API key<input name="LLM_API_KEY" type="password" autocomplete="new-password"><span class="hint" id="provider-key-hint"></span></label>
+        <label class="wide">Model ID
+          <span class="model-row"><input name="LLM_MODEL" required maxlength="200" list="provider-models" autocomplete="off" placeholder="Pick from the list or type an ID">
+          <button type="button" class="button secondary small" id="provider-load-models">Load models</button></span>
+          <span class="hint model-status" id="provider-model-status" aria-live="polite"></span>
+          <datalist id="provider-models"></datalist>
+        </label>
+        <label class="check switch wide" id="provider-require"><input name="REQUIRE_API_KEY" type="checkbox" checked><span></span> Require a key (turn off for a trusted keyless gateway)</label>
+        <p class="meta wide" id="provider-type-help"></p>
+      </div>
+      <p class="test-result dialog-result" id="provider-test" role="status"></p>
+      <p class="form-error" id="provider-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="button danger" id="delete-provider" type="button">Delete</button>
+        <button class="button secondary" id="test-provider" type="button">Save &amp; test</button>
+        <button class="button primary" type="submit">Save provider</button>
+      </div>
     </form>
   </dialog>
-  <div id="toast" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <form method="dialog" class="form-panel">
+      <h2 id="confirm-title">Are you sure?</h2>
+      <p id="confirm-text"></p>
+      <div class="actions"><button class="button secondary" value="cancel" autofocus>Cancel</button>
+      <button class="button danger" value="ok" id="confirm-ok">Delete</button></div>
+    </form>
+  </dialog>
+  <div id="toasts" role="status" aria-live="polite"></div>
 </body>
 </html>

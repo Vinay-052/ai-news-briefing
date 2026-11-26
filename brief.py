@@ -51,7 +51,7 @@ except ImportError as _e:  # wrong interpreter, or venv not built yet
 import taxonomy as tax
 from sources import best_feed, known_strategy, FEED_SUFFIXES, preset_source_set
 from render import render_news_html
-from config import CONFIG
+from config import CONFIG, key_required
 
 log = logging.getLogger("news-brief")
 HERE = Path(__file__).resolve().parent
@@ -326,6 +326,16 @@ def _responses_request(prompt: str, max_tokens: int) -> tuple:
     )
 
 
+def _anthropic_request(prompt: str, max_tokens: int) -> tuple:
+    payload = {"model": CONFIG.LLM_MODEL, "max_tokens": max_tokens,
+               "messages": [{"role": "user", "content": prompt}]}
+    if not _omit_temperature(CONFIG.LLM_MODEL):
+        payload["temperature"] = 0.2
+    headers = {"x-api-key": CONFIG.LLM_API_KEY, "anthropic-version": "2023-06-01",
+               "Content-Type": "application/json"}
+    return CONFIG.LLM_BASE_URL.rstrip("/") + "/messages", payload, headers
+
+
 async def llm_call(client: httpx.AsyncClient, prompt: str, timeout: int = 0,
                    max_tokens: int = 2048) -> str:
     """Ask the configured model, retrying on rate limits / 5xx / timeouts.
@@ -339,7 +349,9 @@ async def llm_call(client: httpx.AsyncClient, prompt: str, timeout: int = 0,
     """
     ollama = CONFIG.PROVIDER == "ollama"
     responses = CONFIG.PROVIDER == "chatgpt"
-    request = _ollama_request if ollama else _responses_request if responses else _openai_request
+    anthropic = CONFIG.PROVIDER == "anthropic"
+    request = (_ollama_request if ollama else _responses_request if responses
+               else _anthropic_request if anthropic else _openai_request)
     model_key = (CONFIG.LLM_BASE_URL, CONFIG.LLM_MODEL)
     timeout = timeout or CONFIG.LLM_TIMEOUT
     last_err = ""
@@ -362,6 +374,9 @@ async def llm_call(client: httpx.AsyncClient, prompt: str, timeout: int = 0,
                         part["text"] for item in data.get("output", []) if item.get("type") == "message"
                         for part in item.get("content", []) if part.get("type") == "output_text"
                     ).strip()
+                if anthropic:
+                    return "".join(part.get("text", "") for part in data.get("content", [])
+                                   if part.get("type") == "text").strip()
                 return (data["choices"][0]["message"]["content"] or "").strip()
             last_err = f"HTTP {r.status_code}"
             # A model with no thinking mode rejects the field outright; drop it
@@ -415,14 +430,14 @@ def preflight_ollama() -> str:
                 models = [m.get("name", "") for m in r.json().get("models") or []]
                 break
             if status in (401, 403):
-                return f"HTTP {status} from {base} — check LLM_API_KEY"
+                return f"HTTP {status} from {base} — check the API key in Settings"
         except Exception:
             pass
         if time.monotonic() >= deadline:
             if CONFIG.OLLAMA_CLOUD:
                 return (f"no usable answer from {base}"
                         + (f" (HTTP {status})" if status else "")
-                        + " — check the network and LLM_API_KEY")
+                        + " — check the network and the API key in Settings")
             return (f"no answer from {base} after {CONFIG.LLM_STARTUP_WAIT}s — "
                     "is ollama running? (systemctl status ollama)")
         if not waited:
@@ -877,11 +892,80 @@ async def _skills_report(news: dict):
 def check_configuration(email=False):
     if not (CONFIG.LLM_BASE_URL and CONFIG.LLM_MODEL):
         raise ValueError("Set the model and endpoint in Settings.")
-    if (CONFIG.PROVIDER in ("chatgpt", "opencode") or CONFIG.OLLAMA_CLOUD
-            or CONFIG.PROVIDER == "openai" and CONFIG.REQUIRE_API_KEY) and not CONFIG.LLM_API_KEY:
+    if key_required(CONFIG) and not CONFIG.LLM_API_KEY:
         raise ValueError("Set the provider API key in Settings.")
     if email and not (CONFIG.SMTP_HOST and CONFIG.MAIL_FROM and CONFIG.MAIL_TO):
         raise ValueError("Set the SMTP host, sender, and recipients in Settings.")
+
+
+# OpenAI's /models also lists embedding, speech, image and moderation models,
+# none of which can write a briefing.
+_NON_CHAT = re.compile(r"embed|tts|whisper|dall-e|davinci|babbage|moderation|transcribe|"
+                       r"image|audio|realtime|search|computer-use|sora", re.I)
+
+
+def list_models() -> list:
+    """Model IDs the active provider offers, for the dashboard's model picker."""
+    base = CONFIG.LLM_BASE_URL.rstrip("/")
+    key = CONFIG.LLM_API_KEY
+    if CONFIG.PROVIDER == "ollama":
+        url = re.sub(r"/v1$", "", base) + "/api/tags"
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+    elif CONFIG.PROVIDER == "anthropic":
+        url = base + "/models?limit=1000"
+        headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
+    else:
+        url = base + "/models"
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+    try:
+        r = httpx.get(url, headers=headers, timeout=20, follow_redirects=False)
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Could not reach {base} ({type(exc).__name__}).") from None
+    if r.status_code in (401, 403):
+        raise RuntimeError("The provider rejected the API key. Paste a valid key, then load models again.")
+    if r.status_code == 404:
+        raise RuntimeError("This endpoint has no model list. Type the model ID instead.")
+    if r.status_code != 200:
+        raise RuntimeError(f"The provider's model list returned HTTP {r.status_code}.")
+    try:
+        data = r.json()
+    except ValueError:
+        raise RuntimeError("The provider's model list was not JSON. Check the API base URL.") from None
+    models = []
+    if CONFIG.PROVIDER == "ollama":
+        for item in data.get("models") or []:
+            if item.get("name"):
+                models.append({"id": item["name"], "label": item["name"]})
+    else:
+        for item in data.get("data") or []:
+            model_id = item.get("id")
+            if not model_id or item.get("type") not in (None, "chat", "model"):
+                continue
+            if CONFIG.PROVIDER == "chatgpt" and _NON_CHAT.search(model_id):
+                continue
+            label = item.get("display_name") or item.get("name") or model_id
+            models.append({"id": model_id, "label": label, "description": (item.get("description") or "")[:160]})
+    models.sort(key=lambda m: m["id"])
+    return models
+
+
+def test_connection() -> str:
+    """Send one tiny prompt to the active provider and return its reply.
+
+    Used by the dashboard's "Test connection" button so a bad key or model
+    surfaces in Settings instead of halfway through a scheduled run.
+    """
+    check_configuration()
+    if CONFIG.PROVIDER == "ollama":
+        problem = preflight_ollama()
+        if problem:
+            raise RuntimeError(problem)
+
+    async def ask():
+        async with httpx.AsyncClient() as client:
+            return await llm_call(client, "Reply with the single word: ready", timeout=60, max_tokens=64)
+
+    return asyncio.run(ask())
 
 
 def build_briefing(title, *, weekly=False, strict=False, when=None):

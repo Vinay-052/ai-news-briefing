@@ -111,7 +111,7 @@ class Config:
 
 
 def _resolve_provider(cfg) -> str:
-    if cfg.LLM_PROVIDER in ("ollama", "openai", "chatgpt", "opencode"):
+    if cfg.LLM_PROVIDER in ("ollama", "openai", "chatgpt", "opencode", "anthropic"):
         return cfg.LLM_PROVIDER
     url = (cfg.LLM_BASE_URL or "").lower()
     return "ollama" if ("11434" in url or "ollama" in url) else "openai"
@@ -127,6 +127,12 @@ def _is_ollama_cloud(cfg) -> bool:
     """
     host = urlparse(cfg.LLM_BASE_URL or "").hostname or ""
     return host.lower() == "ollama.com" or host.lower().endswith(".ollama.com")
+
+
+def key_required(cfg) -> bool:
+    """Hosted providers reject anonymous calls; only local/keyless gateways don't."""
+    return (cfg.PROVIDER in ("chatgpt", "opencode", "anthropic") or cfg.OLLAMA_CLOUD
+            or (cfg.PROVIDER == "openai" and cfg.REQUIRE_API_KEY))
 
 
 DEFAULTS = {key: value for key, value in vars(Config).items() if key.isupper() and key != "TOPIC"}
